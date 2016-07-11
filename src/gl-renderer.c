@@ -46,6 +46,8 @@
 #include "shared/helpers.h"
 #include "weston-egl-ext.h"
 
+static int JYJ_ENABLE_BACKGROUND_ALPHA = 0;
+
 struct gl_shader {
 	GLuint program;
 	GLuint vertex_shader, fragment_shader;
@@ -692,7 +694,10 @@ draw_view(struct weston_view *ev, struct weston_output *output,
 	if (!pixman_region32_not_empty(&repaint))
 		goto out;
 
-	glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+	if (JYJ_ENABLE_BACKGROUND_ALPHA == 1)
+		glBlendFunc(GL_ONE, GL_SRC_COLOR);
+	else
+		glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
 
 	if (gr->fan_debug) {
 		use_shader(gr, &gr->solid_shader);
@@ -772,8 +777,11 @@ repaint_views(struct weston_output *output, pixman_region32_t *damage)
 	struct weston_view *view;
 
 	wl_list_for_each_reverse(view, &compositor->view_list, link)
-		if (view->plane == &compositor->primary_plane)
+		if (view->plane == &compositor->primary_plane) {
+			JYJ_ENABLE_BACKGROUND_ALPHA++;
 			draw_view(view, output, damage);
+		}
+	JYJ_ENABLE_BACKGROUND_ALPHA = 0;
 }
 
 static void

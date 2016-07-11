@@ -1016,9 +1016,10 @@ background_create(struct desktop *desktop)
 	background->widget = window_add_widget(background->window, background);
 	window_set_user_data(background->window, background);
 	widget_set_redraw_handler(background->widget, background_draw);
-	widget_set_transparent(background->widget, 0);
-	window_set_preferred_format(background->window,
-				    WINDOW_PREFERRED_FORMAT_RGB565);
+	/*widget_set_transparent(background->widget, 0);*/
+	widget_set_transparent(background->widget, 1);
+	/*window_set_preferred_format(background->window,
+					  WINDOW_PREFERRED_FORMAT_RGB565);*/
 
 	s = weston_config_get_section(desktop->config, "shell", NULL, NULL);
 	weston_config_section_get_string(s, "background-image",
