@@ -2275,11 +2275,20 @@ static void
 set_window_geometry(struct shell_surface *shsurf,
 		    int32_t x, int32_t y, int32_t width, int32_t height)
 {
+	/*weston_log("shell.c %s x:%d, y:%d, w:%d, h:%d\n",__func__, x, y, width, height);*/
 	shsurf->next_geometry.x = x;
 	shsurf->next_geometry.y = y;
 	shsurf->next_geometry.width = width;
 	shsurf->next_geometry.height = height;
 	shsurf->has_next_geometry = true;
+}
+
+static void
+shell_surface_set_window_geometry(struct wl_client *client,
+			struct wl_resource *resource, int x, int y, int width, int height)
+{
+	struct shell_surface *shsurf = wl_resource_get_user_data(resource);
+	set_window_geometry(shsurf, x, y, width, height);
 }
 
 static void
@@ -3511,6 +3520,7 @@ static const struct wl_shell_surface_interface shell_surface_implementation = {
 	shell_surface_set_transient,
 	shell_surface_set_fullscreen,
 	shell_surface_set_popup,
+	shell_surface_set_window_geometry,
 	shell_surface_set_maximized,
 	shell_surface_set_title,
 	shell_surface_set_class
@@ -5472,6 +5482,8 @@ weston_view_set_initial_position(struct weston_view *view,
 	struct weston_output *output, *target_output = NULL;
 	struct weston_seat *seat;
 	pixman_rectangle32_t area;
+	struct shell_surface *shsurf = get_shell_surface(view->surface);
+
 
 	/* As a heuristic place the new window on the same output as the
 	 * pointer. Falling back to the output containing 0, 0.
@@ -5510,14 +5522,28 @@ weston_view_set_initial_position(struct weston_view *view,
 	range_x = area.width - view->surface->width;
 	range_y = area.height - view->surface->height;
 
-	if (range_x > 0)
-		dx += random() % range_x;
 
-	if (range_y > 0)
-		dy += random() % range_y;
+	/*weston_log("%s x:%d, y:%d w:%d, h:%d\n", __func__, shsurf->geometry.x, shsurf->geometry.y,shsurf->geometry.width, shsurf->geometry.height);*/
+	/*weston_log("%s w:%d, h:%d\n", __func__, view->surface->width, view->surface->height);*/
 
-	x = target_output->x + dx;
-	y = target_output->y + dy;
+	/* If empty geometry, random coordinates generated
+	 * TODO: But if want set 0,0.. but this will be genreated random coordinates
+	 */
+	if ((shsurf->geometry.x == 0) && (shsurf->geometry.y == 0)) {
+		if (range_x > 0)
+			dx += random() % range_x;
+
+		if (range_y > 0)
+			dy += random() % range_y;
+
+		x = target_output->x + dx;
+		y = target_output->y + dy;
+	}
+	/* else set geometry coordinates from user space(ex.Qt5) */
+	else {
+		x = shsurf->geometry.x;
+		y = shsurf->geometry.y;
+	}
 
 	weston_view_set_position(view, x, y);
 }
@@ -5674,7 +5700,8 @@ shell_surface_configure(struct weston_surface *es, int32_t sx, int32_t sy)
 
 	if (es->width == 0)
 		return;
-
+	/*weston_log("%s saved x:%d, y:%d, w:%d, h:%d\n", __func__, shsurf->saved_x, shsurf->saved_y, shsurf->saved_width, shsurf->saved_height);*/
+	/*weston_log("%s geometry x:%d, y:%d, w:%d, h:%d\n", __func__, shsurf->geometry.x, shsurf->geometry.y, shsurf->geometry.width, shsurf->geometry.height);*/
 	if (shsurf->has_next_geometry) {
 		shsurf->geometry = shsurf->next_geometry;
 		shsurf->has_next_geometry = false;

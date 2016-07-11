@@ -1495,6 +1495,7 @@ weston_view_set_position(struct weston_view *view, float x, float y)
 	if (view->geometry.x == x && view->geometry.y == y)
 		return;
 
+	/*weston_log("%s x:%d y:%d\n", __func__, x, y);*/
 	view->geometry.x = x;
 	view->geometry.y = y;
 	weston_view_geometry_dirty(view);
