@@ -40,6 +40,9 @@
 #include <xf86drmMode.h>
 #include <drm_fourcc.h>
 
+/* libdrm specific tcc */
+#include <tcc/tcc_drm.h>
+
 #include <gbm.h>
 #include <libudev.h>
 
@@ -1585,6 +1588,20 @@ drm_set_dpms(struct weston_output *output_base, enum dpms_enum level)
 				    output->dpms_prop->prop_id, level);
 }
 
+/* TCC hw specific ioctl */
+static void
+drm_set_ovp_order(struct weston_output *output_base, uint32_t value)
+{
+	struct drm_output *output = (struct drm_output *) output_base;
+	struct weston_compositor *ec = output_base->compositor;
+	struct drm_compositor *c = (struct drm_compositor *) ec;
+	struct drm_tcc_lcd_ovp req = {
+		.ovp_order = value,
+	};
+
+	drmIoctl(c->drm.fd, DRM_IOCTL_TCC_LCD_OVP, &req);
+}
+
 static const char *connector_type_names[] = {
 	"None",
 	"VGA",
@@ -2175,6 +2192,8 @@ create_output_for_connector(struct drm_compositor *ec,
 	output->base.assign_planes = drm_assign_planes;
 	output->base.set_dpms = drm_set_dpms;
 	output->base.switch_mode = drm_output_switch_mode;
+
+	output->base.set_ovp_order = drm_set_ovp_order;
 
 	output->base.gamma_size = output->original_crtc->gamma_size;
 	output->base.set_gamma = drm_output_set_gamma;

@@ -2284,6 +2284,26 @@ set_window_geometry(struct shell_surface *shsurf,
 }
 
 static void
+set_overlay_priority(struct shell_surface *shsurf,
+			uint32_t ovp_order)
+{
+	struct weston_output *output = NULL;
+	struct weston_compositor *compositor = shsurf->surface->compositor;
+	wl_list_for_each(output, &compositor->output_list, link) {
+		output->set_ovp_order(output, ovp_order);
+	}
+}
+
+static void
+shell_surface_set_overlay_priority(struct wl_client *client,
+			struct wl_resource *resource,
+		    uint32_t ovp_order)
+{
+	struct shell_surface *shsurf = wl_resource_get_user_data(resource);
+	set_overlay_priority(shsurf, ovp_order);
+}
+
+static void
 shell_surface_set_window_geometry(struct wl_client *client,
 			struct wl_resource *resource, int x, int y, int width, int height)
 {
@@ -3521,6 +3541,7 @@ static const struct wl_shell_surface_interface shell_surface_implementation = {
 	shell_surface_set_fullscreen,
 	shell_surface_set_popup,
 	shell_surface_set_window_geometry,
+	shell_surface_set_overlay_priority,
 	shell_surface_set_maximized,
 	shell_surface_set_title,
 	shell_surface_set_class
@@ -6688,6 +6709,7 @@ module_init(struct weston_compositor *ec,
 	ec->shell_interface.resize = surface_resize;
 	ec->shell_interface.set_title = set_title;
 	ec->shell_interface.set_window_geometry = set_window_geometry;
+	ec->shell_interface.set_overlay_priority = set_overlay_priority;
 	ec->shell_interface.set_maximized = shell_interface_set_maximized;
 	ec->shell_interface.set_pid = set_pid;
 
