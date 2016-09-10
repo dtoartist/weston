@@ -2333,6 +2333,14 @@ set_window_geometry(struct shell_surface *shsurf,
 }
 
 static void
+shell_surface_set_window_geometry(struct wl_client *client,
+		struct wl_resource *resource, int x, int y, int width, int height)
+{
+	struct shell_surface *shsurf = wl_resource_get_user_data(resource);
+	set_window_geometry(shsurf, x, y, width, height);
+}
+
+static void
 shell_surface_set_title(struct wl_client *client,
 			struct wl_resource *resource, const char *title)
 {
@@ -3592,6 +3600,7 @@ static const struct wl_shell_surface_interface shell_surface_implementation = {
 	shell_surface_set_transient,
 	shell_surface_set_fullscreen,
 	shell_surface_set_popup,
+	shell_surface_set_window_geometry,
 	shell_surface_set_maximized,
 	shell_surface_set_title,
 	shell_surface_set_class
@@ -5520,6 +5529,7 @@ weston_view_set_initial_position(struct weston_view *view,
 	struct weston_output *output, *target_output = NULL;
 	struct weston_seat *seat;
 	pixman_rectangle32_t area;
+	struct shell_surface *shsurf = get_shell_surface(view->surface);
 
 	/* As a heuristic place the new window on the same output as the
 	 * pointer. Falling back to the output containing 0, 0.
@@ -5560,11 +5570,11 @@ weston_view_set_initial_position(struct weston_view *view,
 	range_x = area.width - view->surface->width;
 	range_y = area.height - view->surface->height;
 
-	if (range_x > 0)
-		x += random() % range_x;
-
-	if (range_y > 0)
-		y += random() % range_y;
+	/* Support for setGeometry function.
+	 * TODO:If not set, all of clients will be at 0,0
+	 */
+	x = shsurf->geometry.x;
+	y = shsurf->geometry.y;
 
 	weston_view_set_position(view, x, y);
 }
