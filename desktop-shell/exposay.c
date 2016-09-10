@@ -3,23 +3,24 @@
  * Copyright © 2011-2012 Collabora, Ltd.
  * Copyright © 2013 Raspberry Pi Foundation
  *
- * Permission to use, copy, modify, distribute, and sell this software and
- * its documentation for any purpose is hereby granted without fee, provided
- * that the above copyright notice appear in all copies and that both that
- * copyright notice and this permission notice appear in supporting
- * documentation, and that the name of the copyright holders not be used in
- * advertising or publicity pertaining to distribution of the software
- * without specific, written prior permission.  The copyright holders make
- * no representations about the suitability of this software for any
- * purpose.  It is provided "as is" without express or implied warranty.
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
  *
- * THE COPYRIGHT HOLDERS DISCLAIM ALL WARRANTIES WITH REGARD TO THIS
- * SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
- * FITNESS, IN NO EVENT SHALL THE COPYRIGHT HOLDERS BE LIABLE FOR ANY
- * SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER
- * RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF
- * CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
- * CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ * The above copyright notice and this permission notice (including the next
+ * paragraph) shall be included in all copies or substantial portions of the
+ * Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+ * DEALINGS IN THE SOFTWARE.
  */
 
 #include "config.h"
@@ -27,6 +28,7 @@
 #include <linux/input.h>
 
 #include "shell.h"
+#include "shared/helpers.h"
 
 struct exposay_surface {
 	struct desktop_shell *shell;
@@ -294,9 +296,6 @@ exposay_layout(struct desktop_shell *shell, struct shell_output *shell_output)
 		esurface->eoutput = eoutput;
 		esurface->view = view;
 
-		esurface->view_destroy_listener.notify = handle_view_destroy;
-		wl_signal_add(&view->destroy_signal, &esurface->view_destroy_listener);
-
 		esurface->row = i / eoutput->grid_size;
 		esurface->column = i % eoutput->grid_size;
 
@@ -319,6 +318,15 @@ exposay_layout(struct desktop_shell *shell, struct shell_output *shell_output)
 			highlight = esurface;
 
 		exposay_animate_in(esurface);
+
+		/* We want our destroy handler to be after the animation
+		 * destroy handler in the list, this way when the view is
+		 * destroyed, the animation can safely call the animation
+		 * completion callback before we free the esurface in our
+		 * destroy handler.
+		 */
+		esurface->view_destroy_listener.notify = handle_view_destroy;
+		wl_signal_add(&view->destroy_signal, &esurface->view_destroy_listener);
 
 		i++;
 	}
@@ -517,12 +525,17 @@ static enum exposay_layout_state
 exposay_set_inactive(struct desktop_shell *shell)
 {
 	struct weston_seat *seat = shell->exposay.seat;
+	struct weston_keyboard *keyboard = weston_seat_get_keyboard(seat);
+	struct weston_pointer *pointer = weston_seat_get_pointer(seat);
 
-	weston_keyboard_end_grab(seat->keyboard);
-	if (seat->pointer_device_count)
-		weston_pointer_end_grab(seat->pointer);
-	if (seat->keyboard->input_method_resource)
-		seat->keyboard->grab = &seat->keyboard->input_method_grab;
+	if (pointer)
+		weston_pointer_end_grab(pointer);
+
+	if (keyboard) {
+		weston_keyboard_end_grab(keyboard);
+		if (keyboard->input_method_resource)
+			keyboard->grab = &keyboard->input_method_grab;
+	}
 
 	return EXPOSAY_LAYOUT_INACTIVE;
 }
@@ -555,28 +568,28 @@ static enum exposay_layout_state
 exposay_transition_active(struct desktop_shell *shell)
 {
 	struct weston_seat *seat = shell->exposay.seat;
+	struct weston_pointer *pointer = weston_seat_get_pointer(seat);
+	struct weston_keyboard *keyboard = weston_seat_get_keyboard(seat);
 	struct shell_output *shell_output;
 	bool animate = false;
 
 	shell->exposay.workspace = get_current_workspace(shell);
-	shell->exposay.focus_prev = get_default_view (seat->keyboard->focus);
-	shell->exposay.focus_current = get_default_view (seat->keyboard->focus);
+	shell->exposay.focus_prev = get_default_view(keyboard->focus);
+	shell->exposay.focus_current = get_default_view(keyboard->focus);
 	shell->exposay.clicked = NULL;
 	wl_list_init(&shell->exposay.surface_list);
 
-	lower_fullscreen_layer(shell);
+	lower_fullscreen_layer(shell, NULL);
 	shell->exposay.grab_kbd.interface = &exposay_kbd_grab;
-	weston_keyboard_start_grab(seat->keyboard,
+	weston_keyboard_start_grab(keyboard,
 	                           &shell->exposay.grab_kbd);
-	weston_keyboard_set_focus(seat->keyboard, NULL);
+	weston_keyboard_set_focus(keyboard, NULL);
 
 	shell->exposay.grab_ptr.interface = &exposay_ptr_grab;
-	if (seat->pointer_device_count) {
-		weston_pointer_start_grab(seat->pointer,
+	if (pointer) {
+		weston_pointer_start_grab(pointer,
 		                          &shell->exposay.grab_ptr);
-		weston_pointer_set_focus(seat->pointer, NULL,
-				         seat->pointer->x,
-					 seat->pointer->y);
+		weston_pointer_clear_focus(pointer);
 	}
 	wl_list_for_each(shell_output, &shell->output_list, link) {
 		enum exposay_layout_state state;
@@ -648,10 +661,10 @@ exposay_set_state(struct desktop_shell *shell, enum exposay_target_state state,
 }
 
 void
-exposay_binding(struct weston_seat *seat, enum weston_keyboard_modifier modifier,
+exposay_binding(struct weston_keyboard *keyboard, enum weston_keyboard_modifier modifier,
 		void *data)
 {
 	struct desktop_shell *shell = data;
 
-	exposay_set_state(shell, EXPOSAY_TARGET_OVERVIEW, seat);
+	exposay_set_state(shell, EXPOSAY_TARGET_OVERVIEW, keyboard->seat);
 }

@@ -1,23 +1,26 @@
 /*
  * Copyright © 2013 Jason Ekstrand
  *
- * Permission to use, copy, modify, distribute, and sell this software and
- * its documentation for any purpose is hereby granted without fee, provided
- * that the above copyright notice appear in all copies and that both that
- * copyright notice and this permission notice appear in supporting
- * documentation, and that the name of the copyright holders not be used in
- * advertising or publicity pertaining to distribution of the software
- * without specific, written prior permission.  The copyright holders make
- * no representations about the suitability of this software for any
- * purpose.  It is provided "as is" without express or implied warranty.
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files (the
+ * "Software"), to deal in the Software without restriction, including
+ * without limitation the rights to use, copy, modify, merge, publish,
+ * distribute, sublicense, and/or sell copies of the Software, and to
+ * permit persons to whom the Software is furnished to do so, subject to
+ * the following conditions:
  *
- * THE COPYRIGHT HOLDERS DISCLAIM ALL WARRANTIES WITH REGARD TO THIS
- * SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
- * FITNESS, IN NO EVENT SHALL THE COPYRIGHT HOLDERS BE LIABLE FOR ANY
- * SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER
- * RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF
- * CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
- * CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ * The above copyright notice and this permission notice (including the
+ * next paragraph) shall be included in all copies or substantial
+ * portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT.  IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+ * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 
 #include "config.h"
@@ -31,6 +34,7 @@
 
 #include "compositor.h"
 #include "fullscreen-shell-server-protocol.h"
+#include "shared/helpers.h"
 
 struct fullscreen_shell {
 	struct wl_client *client;
@@ -92,15 +96,17 @@ static void
 seat_caps_changed(struct wl_listener *l, void *data)
 {
 	struct weston_seat *seat = data;
+	struct weston_keyboard *keyboard = weston_seat_get_keyboard(seat);
+	struct weston_pointer *pointer = weston_seat_get_pointer(seat);
 	struct pointer_focus_listener *listener;
 	struct fs_output *fsout;
 
 	listener = container_of(l, struct pointer_focus_listener, seat_caps);
 
 	/* no pointer */
-	if (seat->pointer) {
+	if (pointer) {
 		if (!listener->pointer_focus.link.prev) {
-			wl_signal_add(&seat->pointer->focus_signal,
+			wl_signal_add(&pointer->focus_signal,
 				      &listener->pointer_focus);
 		}
 	} else {
@@ -109,7 +115,7 @@ seat_caps_changed(struct wl_listener *l, void *data)
 		}
 	}
 
-	if (seat->keyboard && seat->keyboard->focus != NULL) {
+	if (keyboard && keyboard->focus != NULL) {
 		wl_list_for_each(fsout, &listener->shell->output_list, link) {
 			if (fsout->surface) {
 				weston_surface_activate(fsout->surface, seat);
@@ -136,10 +142,9 @@ seat_created(struct wl_listener *l, void *data)
 	struct weston_seat *seat = data;
 	struct pointer_focus_listener *listener;
 
-	listener = malloc(sizeof *listener);
+	listener = zalloc(sizeof *listener);
 	if (!listener)
 		return;
-	memset(listener, 0, sizeof *listener);
 
 	listener->shell = container_of(l, struct fullscreen_shell,
 				       seat_created_listener);
@@ -245,10 +250,9 @@ fs_output_create(struct fullscreen_shell *shell, struct weston_output *output)
 {
 	struct fs_output *fsout;
 
-	fsout = malloc(sizeof *fsout);
+	fsout = zalloc(sizeof *fsout);
 	if (!fsout)
 		return NULL;
-	memset(fsout, 0, sizeof *fsout);
 
 	fsout->shell = shell;
 	wl_list_insert(&shell->output_list, &fsout->link);
@@ -463,9 +467,28 @@ fs_output_configure_for_mode(struct fs_output *fsout,
 					&surf_x, &surf_y,
 					&surf_width, &surf_height);
 
+	/* The actual output mode is in physical units.  We need to
+	 * transform the surface size to physical unit size by flipping ans
+	 * possibly scaling it.
+	 */
+	switch (fsout->output->transform) {
+	case WL_OUTPUT_TRANSFORM_90:
+	case WL_OUTPUT_TRANSFORM_FLIPPED_90:
+	case WL_OUTPUT_TRANSFORM_270:
+	case WL_OUTPUT_TRANSFORM_FLIPPED_270:
+		mode.width = surf_height * fsout->output->native_scale;
+		mode.height = surf_width * fsout->output->native_scale;
+		break;
+
+	case WL_OUTPUT_TRANSFORM_NORMAL:
+	case WL_OUTPUT_TRANSFORM_FLIPPED:
+	case WL_OUTPUT_TRANSFORM_180:
+	case WL_OUTPUT_TRANSFORM_FLIPPED_180:
+	default:
+		mode.width = surf_width * fsout->output->native_scale;
+		mode.height = surf_height * fsout->output->native_scale;
+	}
 	mode.flags = 0;
-	mode.width = surf_width * fsout->output->native_scale;
-	mode.height = surf_height * fsout->output->native_scale;
 	mode.refresh = fsout->pending.framerate;
 
 	ret = weston_output_mode_switch_to_temporary(fsout->output, &mode,
@@ -677,7 +700,10 @@ fullscreen_shell_present_surface(struct wl_client *client,
 
 	if (surface) {
 		wl_list_for_each(seat, &shell->compositor->seat_list, link) {
-			if (seat->keyboard && seat->keyboard->focus == NULL)
+			struct weston_keyboard *keyboard =
+				weston_seat_get_keyboard(seat);
+
+			if (keyboard && !keyboard->focus)
 				weston_surface_activate(surface, seat);
 		}
 	}
@@ -725,7 +751,10 @@ fullscreen_shell_present_surface_for_mode(struct wl_client *client,
 				       fsout, mode_feedback_destroyed);
 
 	wl_list_for_each(seat, &shell->compositor->seat_list, link) {
-		if (seat->keyboard && seat->keyboard->focus == NULL)
+		struct weston_keyboard *keyboard =
+			weston_seat_get_keyboard(seat);
+
+		if (keyboard && !keyboard->focus)
 			weston_surface_activate(surface, seat);
 	}
 }
@@ -793,11 +822,10 @@ module_init(struct weston_compositor *compositor,
 	struct weston_seat *seat;
 	struct weston_output *output;
 
-	shell = malloc(sizeof *shell);
+	shell = zalloc(sizeof *shell);
 	if (shell == NULL)
 		return -1;
 
-	memset(shell, 0, sizeof *shell);
 	shell->compositor = compositor;
 
 	shell->client_destroyed.notify = client_destroyed;

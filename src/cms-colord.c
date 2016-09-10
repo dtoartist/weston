@@ -1,23 +1,26 @@
 /*
  * Copyright © 2013 Richard Hughes
  *
- * Permission to use, copy, modify, distribute, and sell this software and
- * its documentation for any purpose is hereby granted without fee, provided
- * that the above copyright notice appear in all copies and that both that
- * copyright notice and this permission notice appear in supporting
- * documentation, and that the name of the copyright holders not be used in
- * advertising or publicity pertaining to distribution of the software
- * without specific, written prior permission.  The copyright holders make
- * no representations about the suitability of this software for any
- * purpose.  It is provided "as is" without express or implied warranty.
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files (the
+ * "Software"), to deal in the Software without restriction, including
+ * without limitation the rights to use, copy, modify, merge, publish,
+ * distribute, sublicense, and/or sell copies of the Software, and to
+ * permit persons to whom the Software is furnished to do so, subject to
+ * the following conditions:
  *
- * THE COPYRIGHT HOLDERS DISCLAIM ALL WARRANTIES WITH REGARD TO THIS
- * SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
- * FITNESS, IN NO EVENT SHALL THE COPYRIGHT HOLDERS BE LIABLE FOR ANY
- * SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER
- * RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF
- * CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
- * CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ * The above copyright notice and this permission notice (including the
+ * next paragraph) shall be included in all copies or substantial
+ * portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT.  IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+ * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 
 #ifdef HAVE_CONFIG_H
@@ -33,6 +36,7 @@
 
 #include "compositor.h"
 #include "cms-helper.h"
+#include "shared/helpers.h"
 
 struct cms_colord {
 	struct weston_compositor	*ec;
@@ -216,26 +220,9 @@ colord_notifier_output_destroy(struct wl_listener *listener, void *data)
 		container_of(listener, struct cms_output, destroy_listener);
 	struct weston_output *o = (struct weston_output *) data;
 	struct cms_colord *cms = ocms->cms;
-
-	gboolean ret;
 	gchar *device_id;
-	GError *error = NULL;
 
-	colord_idle_cancel_for_output(cms, o);
 	device_id = get_output_id(cms, o);
-	weston_log("colord: output removed %s\n", device_id);
-	g_signal_handlers_disconnect_by_data(ocms->device, ocms);
-	ret = cd_client_delete_device_sync (cms->client,
-					    ocms->device,
-					    NULL,
-					    &error);
-
-	if (!ret) {
-		weston_log("colord: failed to delete device: %s\n", error->message);
-		g_error_free(error);
-		goto out;
-	}
-out:
 	g_hash_table_remove (cms->devices, device_id);
 	g_free (device_id);
 }
@@ -441,15 +428,17 @@ colord_load_pnp_ids(struct cms_colord *cms)
 static void
 colord_module_destroy(struct cms_colord *cms)
 {
-	g_free(cms->pnp_ids_data);
-	g_hash_table_unref(cms->pnp_ids);
-
 	if (cms->loop) {
 		g_main_loop_quit(cms->loop);
 		g_main_loop_unref(cms->loop);
 	}
 	if (cms->thread)
 		g_thread_join(cms->thread);
+
+	/* cms->devices must be destroyed before other resources, as
+	 * the other resources are needed during output cleanup in
+	 * cms->devices unref.
+	 */
 	if (cms->devices)
 		g_hash_table_unref(cms->devices);
 	if (cms->client)
@@ -458,6 +447,10 @@ colord_module_destroy(struct cms_colord *cms)
 		close(cms->readfd);
 	if (cms->writefd)
 		close(cms->writefd);
+
+	g_free(cms->pnp_ids_data);
+	g_hash_table_unref(cms->pnp_ids);
+
 	free(cms);
 }
 
@@ -473,8 +466,33 @@ static void
 colord_cms_output_destroy(gpointer data)
 {
 	struct cms_output *ocms = (struct cms_output *) data;
+	struct cms_colord *cms = ocms->cms;
+	struct weston_output *o = ocms->o;
+	gboolean ret;
+	gchar *device_id;
+	GError *error = NULL;
+
+	colord_idle_cancel_for_output(cms, o);
+	device_id = get_output_id(cms, o);
+	weston_log("colord: output unplugged %s\n", device_id);
+
+	wl_list_remove(&ocms->destroy_listener.link);
+	g_signal_handlers_disconnect_by_data(ocms->device, ocms);
+
+	ret = cd_client_delete_device_sync (cms->client,
+					    ocms->device,
+					    NULL,
+					    &error);
+
+	if (!ret) {
+		weston_log("colord: failed to delete device: %s\n",
+			   error->message);
+		g_error_free(error);
+	}
+
 	g_object_unref(ocms->device);
 	g_slice_free(struct cms_output, ocms);
+	g_free (device_id);
 }
 
 WL_EXPORT int

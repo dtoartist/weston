@@ -1,23 +1,26 @@
 /*
  * Copyright © 2008-2011 Kristian Høgsberg
  *
- * Permission to use, copy, modify, distribute, and sell this software and
- * its documentation for any purpose is hereby granted without fee, provided
- * that the above copyright notice appear in all copies and that both that
- * copyright notice and this permission notice appear in supporting
- * documentation, and that the name of the copyright holders not be used in
- * advertising or publicity pertaining to distribution of the software
- * without specific, written prior permission.  The copyright holders make
- * no representations about the suitability of this software for any
- * purpose.  It is provided "as is" without express or implied warranty.
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files (the
+ * "Software"), to deal in the Software without restriction, including
+ * without limitation the rights to use, copy, modify, merge, publish,
+ * distribute, sublicense, and/or sell copies of the Software, and to
+ * permit persons to whom the Software is furnished to do so, subject to
+ * the following conditions:
  *
- * THE COPYRIGHT HOLDERS DISCLAIM ALL WARRANTIES WITH REGARD TO THIS
- * SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
- * FITNESS, IN NO EVENT SHALL THE COPYRIGHT HOLDERS BE LIABLE FOR ANY
- * SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER
- * RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF
- * CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
- * CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ * The above copyright notice and this permission notice (including the
+ * next paragraph) shall be included in all copies or substantial
+ * portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT.  IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+ * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 
 #include "config.h"
@@ -32,8 +35,9 @@
 
 #include "compositor.h"
 #include "screenshooter-server-protocol.h"
+#include "shared/helpers.h"
 
-#include "../wcap/wcap-decode.h"
+#include "wcap/wcap-decode.h"
 
 struct screenshooter {
 	struct weston_compositor *ec;
@@ -282,8 +286,8 @@ screenshooter_sigchld(struct weston_process *process, int status)
 }
 
 static void
-screenshooter_binding(struct weston_seat *seat, uint32_t time, uint32_t key,
-		      void *data)
+screenshooter_binding(struct weston_keyboard *keyboard, uint32_t time,
+		      uint32_t key, void *data)
 {
 	struct screenshooter *shooter = data;
 	char *screenshooter_exe;
@@ -556,15 +560,16 @@ weston_recorder_destroy(struct weston_recorder *recorder)
 }
 
 static void
-recorder_binding(struct weston_seat *seat, uint32_t time, uint32_t key, void *data)
+recorder_binding(struct weston_keyboard *keyboard, uint32_t time,
+		 uint32_t key, void *data)
 {
-	struct weston_compositor *ec = seat->compositor;
+	struct weston_compositor *ec = keyboard->seat->compositor;
 	struct weston_output *output;
 	struct wl_listener *listener = NULL;
 	struct weston_recorder *recorder;
 	static const char filename[] = "capture.wcap";
 
-	wl_list_for_each(output, &seat->compositor->output_list, link) {
+	wl_list_for_each(output, &ec->output_list, link) {
 		listener = wl_signal_get(&output->frame_signal,
 					 weston_recorder_frame_notify);
 		if (listener)
@@ -582,9 +587,8 @@ recorder_binding(struct weston_seat *seat, uint32_t time, uint32_t key, void *da
 		recorder->destroying = 1;
 		weston_output_schedule_repaint(recorder->output);
 	} else {
-		if (seat->keyboard && seat->keyboard->focus &&
-		    seat->keyboard->focus->output)
-			output = seat->keyboard->focus->output;
+		if (keyboard->focus && keyboard->focus->output)
+			output = keyboard->focus->output;
 		else
 			output = container_of(ec->output_list.next,
 					      struct weston_output, link);

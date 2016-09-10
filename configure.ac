@@ -1,5 +1,5 @@
 m4_define([weston_major_version], [1])
-m4_define([weston_minor_version], [8])
+m4_define([weston_minor_version], [9])
 m4_define([weston_micro_version], [0])
 m4_define([weston_version],
           [weston_major_version.weston_minor_version.weston_micro_version])
@@ -59,7 +59,26 @@ AC_CHECK_HEADERS([execinfo.h])
 
 AC_CHECK_FUNCS([mkostemp strchrnul initgroups posix_fallocate])
 
-COMPOSITOR_MODULES="wayland-server >= 1.8.0 pixman-1 >= 0.25.2"
+COMPOSITOR_MODULES="wayland-server >= 1.9.0 pixman-1 >= 0.25.2"
+
+AC_CONFIG_FILES([doc/doxygen/tools.doxygen doc/doxygen/tooldev.doxygen])
+
+AC_ARG_ENABLE(devdocs,
+	      AS_HELP_STRING([--disable-devdocs],
+			     [do not enable building of developer documentation]),,
+	      enable_devdocs=auto)
+if test "x$enable_devdocs" != "xno"; then
+	AC_CHECK_PROGS([DOXYGEN], [doxygen])
+	if test "x$DOXYGEN" = "x" -a "x$enable_devdocs" = "xyes"; then
+		AC_MSG_ERROR([Developer documentation explicitly requested, but Doxygen couldn't be found])
+	fi
+	if test "x$DOXYGEN" != "x"; then
+		enable_devdocs=yes
+	else
+		enable_devdocs=no
+	fi
+fi
+AM_CONDITIONAL(ENABLE_DEVDOCS, test "x$enable_devdocs" = "xyes")
 
 AC_ARG_ENABLE(egl, [  --disable-egl],,
               enable_egl=yes)
@@ -68,6 +87,7 @@ if test x$enable_egl = xyes; then
 	AC_DEFINE([ENABLE_EGL], [1], [Build Weston with EGL support])
 	PKG_CHECK_MODULES(EGL, [egl >= 7.10 glesv2])
         PKG_CHECK_MODULES([EGL_TESTS], [egl >= 7.10 glesv2 wayland-client wayland-egl])
+	PKG_CHECK_MODULES([GL_RENDERER], [libdrm])
 fi
 
 AC_ARG_ENABLE(xkbcommon,
@@ -152,6 +172,9 @@ AM_CONDITIONAL(ENABLE_DRM_COMPOSITOR, test x$enable_drm_compositor = xyes)
 if test x$enable_drm_compositor = xyes; then
   AC_DEFINE([BUILD_DRM_COMPOSITOR], [1], [Build the DRM compositor])
   PKG_CHECK_MODULES(DRM_COMPOSITOR, [libudev >= 136 libdrm >= 2.4.30 gbm mtdev >= 1.1.0])
+  PKG_CHECK_MODULES(DRM_COMPOSITOR_GBM, [gbm >= 10.2],
+		    [AC_DEFINE([HAVE_GBM_FD_IMPORT], 1, [gbm supports dmabuf import])],
+		    [AC_MSG_WARN([gbm does not support dmabuf import, will omit that capability])])
 fi
 
 
@@ -294,7 +317,7 @@ AC_SUBST(JPEG_LIBS)
 
 PKG_CHECK_MODULES(CAIRO, [cairo])
 
-PKG_CHECK_MODULES(TEST_CLIENT, [wayland-client >= 1.8.0])
+PKG_CHECK_MODULES(TEST_CLIENT, [wayland-client >= 1.9.0])
 
 AC_ARG_ENABLE(simple-clients,
               AS_HELP_STRING([--disable-simple-clients],
@@ -314,6 +337,20 @@ if test x$enable_simple_egl_clients = xyes; then
   PKG_CHECK_MODULES(SIMPLE_EGL_CLIENT,
                     [egl >= 7.10 glesv2 wayland-client wayland-egl wayland-cursor])
 fi
+
+AC_ARG_ENABLE(simple-intel-dmabuf-client,
+              AS_HELP_STRING([--disable-simple-intel-dmabuf-client],
+                             [do not build the simple intel dmabuf client]),,
+              enable_simple_intel_dmabuf_client="auto")
+if ! test "x$enable_simple_intel_dmabuf_client" = "xno"; then
+  PKG_CHECK_MODULES(SIMPLE_DMABUF_CLIENT, [wayland-client libdrm libdrm_intel],
+		    have_simple_dmabuf_client=yes, have_simple_dmabuf_client=no)
+  if test "x$have_simple_dmabuf_client" = "xno" -a "x$enable_simple_intel_dmabuf_client" = "xyes"; then
+    AC_MSG_ERROR([Intel dmabuf client explicitly enabled, but libdrm_intel couldn't be found])
+  fi
+  enable_simple_intel_dmabuf_client="$have_simple_dmabuf_client"
+fi
+AM_CONDITIONAL(BUILD_SIMPLE_INTEL_DMABUF_CLIENT, test "x$enable_simple_intel_dmabuf_client" = "xyes")
 
 AC_ARG_ENABLE(clients, [  --enable-clients],, enable_clients=yes)
 AM_CONDITIONAL(BUILD_CLIENTS, test x$enable_clients = xyes)
@@ -364,11 +401,6 @@ if test x$enable_weston_launch == xyes; then
   PAM_LIBS=-lpam
   AC_SUBST(PAM_LIBS)
 fi
-
-if test x$enable_egl = xyes; then
-  PKG_CHECK_MODULES(GLU, [glu], [have_glu=yes], [have_glu=no])
-fi
-AM_CONDITIONAL(HAVE_GLU, test "x$have_glu" = "xyes")
 
 AM_CONDITIONAL(HAVE_PANGO, test "x$have_pango" = "xyes")
 
@@ -430,6 +462,30 @@ if test "x$enable_dbus" != "xno"; then
         fi
 fi
 AM_CONDITIONAL(ENABLE_DBUS, test "x$enable_dbus" = "xyes")
+
+# Note that other features might want libxml2, or this feature might use
+# alternative xml libraries at some point. Therefore the feature and
+# pre-requisite concepts are split.
+AC_ARG_ENABLE(junit_xml,
+	      AS_HELP_STRING([--disable-junit-xml],
+			     [do not build with JUnit XML output]),,
+	      enable_junit_xml=auto)
+if test "x$enable_junit_xml" != "xno"; then
+	PKG_CHECK_MODULES(LIBXML2,
+			  [libxml-2.0 >= 2.6],
+			  have_libxml2=yes,
+			  have_libxml2=no)
+	if test "x$have_libxml2" = "xno" -a "x$enable_junit_xml" = "xyes"; then
+		AC_MSG_ERROR([JUnit XML support explicitly requested, but libxml2 couldn't be found])
+	fi
+	if test "x$have_libxml2" = "xyes"; then
+		enable_junit_xml=yes
+		AC_DEFINE(ENABLE_JUNIT_XML, [1], [Build Weston with JUnit output support])
+	else
+		enable_junit_xml=no
+	fi
+fi
+AM_CONDITIONAL(ENABLE_JUNIT_XML, test "x$enable_junit_xml" = "xyes")
 
 # ivi-shell support
 AC_ARG_ENABLE(ivi-shell,
@@ -530,6 +586,7 @@ AC_MSG_RESULT([
 
 	Build wcap utility		${enable_wcap_tools}
 	Build Fullscreen Shell		${enable_fullscreen_shell}
+	Enable developer documentation	${enable_devdocs}
 
 	weston-launch utility		${enable_weston_launch}
 	systemd-login support		${have_systemd_login}
@@ -542,6 +599,7 @@ AC_MSG_RESULT([
 	FBDEV Compositor		${enable_fbdev_compositor}
 	RDP Compositor			${enable_rdp_compositor}
 	Screen Sharing			${enable_screen_sharing}
+	JUnit XML output		${enable_junit_xml}
 
 	Raspberry Pi BCM headers	${have_bcm_host}
 
@@ -553,7 +611,6 @@ AC_MSG_RESULT([
 	Install Demo Clients		${enable_demo_clients_install}
 
 	Colord Support			${have_colord}
-	GLU Support			${have_glu}
 	LCMS2 Support			${have_lcms}
 	libwebp Support			${have_webp}
 	libunwind Support		${have_libunwind}

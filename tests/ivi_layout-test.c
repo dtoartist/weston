@@ -1,23 +1,26 @@
 /*
  * Copyright © 2015 Collabora, Ltd.
  *
- * Permission to use, copy, modify, distribute, and sell this software and
- * its documentation for any purpose is hereby granted without fee, provided
- * that the above copyright notice appear in all copies and that both that
- * copyright notice and this permission notice appear in supporting
- * documentation, and that the name of the copyright holders not be used in
- * advertising or publicity pertaining to distribution of the software
- * without specific, written prior permission.  The copyright holders make
- * no representations about the suitability of this software for any
- * purpose.  It is provided "as is" without express or implied warranty.
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files (the
+ * "Software"), to deal in the Software without restriction, including
+ * without limitation the rights to use, copy, modify, merge, publish,
+ * distribute, sublicense, and/or sell copies of the Software, and to
+ * permit persons to whom the Software is furnished to do so, subject to
+ * the following conditions:
  *
- * THE COPYRIGHT HOLDERS DISCLAIM ALL WARRANTIES WITH REGARD TO THIS
- * SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
- * FITNESS, IN NO EVENT SHALL THE COPYRIGHT HOLDERS BE LIABLE FOR ANY
- * SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER
- * RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF
- * CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
- * CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ * The above copyright notice and this permission notice (including the
+ * next paragraph) shall be included in all copies or substantial
+ * portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT.  IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+ * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 
 #include "config.h"
@@ -25,6 +28,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "shared/helpers.h"
 #include "weston-test-client-helper.h"
 #include "ivi-application-client-protocol.h"
 #include "ivi-test.h"
@@ -186,6 +190,29 @@ ivi_window_destroy(struct ivi_window *wnd)
 const char * const basic_test_names[] = {
 	"surface_visibility",
 	"surface_opacity",
+	"surface_orientation",
+	"surface_dimension",
+	"surface_position",
+	"surface_destination_rectangle",
+	"surface_source_rectangle",
+	"surface_bad_opacity",
+	"surface_properties_changed_notification",
+	"surface_bad_properties_changed_notification",
+};
+
+const char * const surface_property_commit_changes_test_names[] = {
+	"commit_changes_after_visibility_set_surface_destroy",
+	"commit_changes_after_opacity_set_surface_destroy",
+	"commit_changes_after_orientation_set_surface_destroy",
+	"commit_changes_after_dimension_set_surface_destroy",
+	"commit_changes_after_position_set_surface_destroy",
+	"commit_changes_after_source_rectangle_set_surface_destroy",
+	"commit_changes_after_destination_rectangle_set_surface_destroy",
+};
+
+const char * const render_order_test_names[] = {
+	"layer_render_order",
+	"layer_bad_render_order",
 };
 
 TEST_P(ivi_layout_runner, basic_test_names)
@@ -226,5 +253,217 @@ TEST(ivi_layout_surface_create)
 	runner_run(runner, "surface_create_p2");
 
 	ivi_window_destroy(winds[1]);
+	runner_destroy(runner);
+}
+
+TEST_P(commit_changes_after_properties_set_surface_destroy, surface_property_commit_changes_test_names)
+{
+	/* an element from surface_property_commit_changes_test_names */
+	const char * const *test_name = data;
+	struct client *client;
+	struct runner *runner;
+	struct ivi_window *wnd;
+
+	client = create_client();
+	runner = client_create_runner(client);
+
+	wnd = client_create_ivi_window(client, IVI_TEST_SURFACE_ID(0));
+
+	runner_run(runner, *test_name);
+
+	ivi_window_destroy(wnd);
+
+	runner_run(runner, "ivi_layout_commit_changes");
+
+	runner_destroy(runner);
+}
+
+TEST(get_surface_after_destroy_ivi_surface)
+{
+	struct client *client;
+	struct runner *runner;
+	struct ivi_window *wnd;
+
+	client = create_client();
+	runner = client_create_runner(client);
+
+	wnd = client_create_ivi_window(client, IVI_TEST_SURFACE_ID(0));
+
+	ivi_surface_destroy(wnd->ivi_surface);
+
+	runner_run(runner, "get_surface_after_destroy_surface");
+
+	wl_surface_destroy(wnd->wl_surface);
+	free(wnd);
+	runner_destroy(runner);
+}
+
+TEST(get_surface_after_destroy_wl_surface)
+{
+	struct client *client;
+	struct runner *runner;
+	struct ivi_window *wnd;
+
+	client = create_client();
+	runner = client_create_runner(client);
+
+	wnd = client_create_ivi_window(client, IVI_TEST_SURFACE_ID(0));
+
+	wl_surface_destroy(wnd->wl_surface);
+
+	runner_run(runner, "get_surface_after_destroy_surface");
+
+	ivi_surface_destroy(wnd->ivi_surface);
+	free(wnd);
+	runner_destroy(runner);
+}
+
+TEST_P(ivi_layout_layer_render_order_runner, render_order_test_names)
+{
+	/* an element from render_order_test_names */
+	const char * const *test_name = data;
+	struct client *client;
+	struct runner *runner;
+	struct ivi_window *winds[3];
+
+	client = create_client();
+	runner = client_create_runner(client);
+
+	winds[0] = client_create_ivi_window(client, IVI_TEST_SURFACE_ID(0));
+	winds[1] = client_create_ivi_window(client, IVI_TEST_SURFACE_ID(1));
+	winds[2] = client_create_ivi_window(client, IVI_TEST_SURFACE_ID(2));
+
+	runner_run(runner, *test_name);
+
+	ivi_window_destroy(winds[0]);
+	ivi_window_destroy(winds[1]);
+	ivi_window_destroy(winds[2]);
+	runner_destroy(runner);
+}
+
+TEST(destroy_surface_after_layer_render_order)
+{
+	struct client *client;
+	struct runner *runner;
+	struct ivi_window *winds[3];
+
+	client = create_client();
+	runner = client_create_runner(client);
+
+	winds[0] = client_create_ivi_window(client, IVI_TEST_SURFACE_ID(0));
+	winds[1] = client_create_ivi_window(client, IVI_TEST_SURFACE_ID(1));
+	winds[2] = client_create_ivi_window(client, IVI_TEST_SURFACE_ID(2));
+
+	runner_run(runner, "test_layer_render_order_destroy_one_surface_p1");
+
+	ivi_window_destroy(winds[1]);
+
+	runner_run(runner, "test_layer_render_order_destroy_one_surface_p2");
+
+	ivi_window_destroy(winds[0]);
+	ivi_window_destroy(winds[2]);
+	runner_destroy(runner);
+}
+
+TEST(commit_changes_after_render_order_set_surface_destroy)
+{
+	struct client *client;
+	struct runner *runner;
+	struct ivi_window *winds[3];
+
+	client = create_client();
+	runner = client_create_runner(client);
+
+	winds[0] = client_create_ivi_window(client, IVI_TEST_SURFACE_ID(0));
+	winds[1] = client_create_ivi_window(client, IVI_TEST_SURFACE_ID(1));
+	winds[2] = client_create_ivi_window(client, IVI_TEST_SURFACE_ID(2));
+
+	runner_run(runner, "commit_changes_after_render_order_set_surface_destroy");
+
+	ivi_window_destroy(winds[1]);
+
+	runner_run(runner, "ivi_layout_commit_changes");
+	runner_run(runner, "cleanup_layer");
+
+	ivi_window_destroy(winds[0]);
+	ivi_window_destroy(winds[2]);
+	runner_destroy(runner);
+}
+
+TEST(ivi_layout_surface_configure_notification)
+{
+	struct client *client;
+	struct runner *runner;
+	struct ivi_window *wind;
+	struct wl_buffer *buffer;
+
+	client = create_client();
+	runner = client_create_runner(client);
+
+	runner_run(runner, "surface_configure_notification_p1");
+
+	wind = client_create_ivi_window(client, IVI_TEST_SURFACE_ID(0));
+
+	buffer = create_shm_buffer(client, 200, 300, NULL);
+
+	wl_surface_attach(wind->wl_surface, buffer, 0, 0);
+	wl_surface_damage(wind->wl_surface, 0, 0, 20, 30);
+	wl_surface_commit(wind->wl_surface);
+
+	runner_run(runner, "surface_configure_notification_p2");
+
+	wl_surface_attach(wind->wl_surface, buffer, 0, 0);
+	wl_surface_damage(wind->wl_surface, 0, 0, 40, 50);
+	wl_surface_commit(wind->wl_surface);
+
+	runner_run(runner, "surface_configure_notification_p3");
+
+	wl_buffer_destroy(buffer);
+	ivi_window_destroy(wind);
+	runner_destroy(runner);
+}
+
+TEST(ivi_layout_surface_create_notification)
+{
+	struct client *client;
+	struct runner *runner;
+	struct ivi_window *wind;
+
+	client = create_client();
+	runner = client_create_runner(client);
+
+	runner_run(runner, "surface_create_notification_p1");
+
+	wind = client_create_ivi_window(client, IVI_TEST_SURFACE_ID(0));
+
+	runner_run(runner, "surface_create_notification_p2");
+
+	ivi_window_destroy(wind);
+	wind = client_create_ivi_window(client, IVI_TEST_SURFACE_ID(0));
+	runner_run(runner, "surface_create_notification_p3");
+
+	ivi_window_destroy(wind);
+	runner_destroy(runner);
+}
+
+TEST(ivi_layout_surface_remove_notification)
+{
+	struct client *client;
+	struct runner *runner;
+	struct ivi_window *wind;
+
+	client = create_client();
+	runner = client_create_runner(client);
+
+	wind = client_create_ivi_window(client, IVI_TEST_SURFACE_ID(0));
+	runner_run(runner, "surface_remove_notification_p1");
+	ivi_window_destroy(wind);
+
+	runner_run(runner, "surface_remove_notification_p2");
+
+	wind = client_create_ivi_window(client, IVI_TEST_SURFACE_ID(0));
+	ivi_window_destroy(wind);
+	runner_run(runner, "surface_remove_notification_p3");
+
 	runner_destroy(runner);
 }

@@ -1,23 +1,26 @@
 /*
  * Copyright © 2015 Samsung Electronics Co., Ltd
  *
- * Permission to use, copy, modify, distribute, and sell this software and
- * its documentation for any purpose is hereby granted without fee, provided
- * that the above copyright notice appear in all copies and that both that
- * copyright notice and this permission notice appear in supporting
- * documentation, and that the name of the copyright holders not be used in
- * advertising or publicity pertaining to distribution of the software
- * without specific, written prior permission.  The copyright holders make
- * no representations about the suitability of this software for any
- * purpose.  It is provided "as is" without express or implied warranty.
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files (the
+ * "Software"), to deal in the Software without restriction, including
+ * without limitation the rights to use, copy, modify, merge, publish,
+ * distribute, sublicense, and/or sell copies of the Software, and to
+ * permit persons to whom the Software is furnished to do so, subject to
+ * the following conditions:
  *
- * THE COPYRIGHT HOLDERS DISCLAIM ALL WARRANTIES WITH REGARD TO THIS
- * SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
- * FITNESS, IN NO EVENT SHALL THE COPYRIGHT HOLDERS BE LIABLE FOR ANY
- * SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER
- * RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF
- * CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
- * CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ * The above copyright notice and this permission notice (including the
+ * next paragraph) shall be included in all copies or substantial
+ * portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT.  IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+ * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 
 #include "config.h"
@@ -39,7 +42,8 @@ char *server_parameters="--use-pixman --width=320 --height=240";
  * @returns true if successfully saved file; false otherwise.
  */
 static bool
-write_surface_as_png(const struct surface* weston_surface, const char *fname) {
+write_surface_as_png(const struct surface* weston_surface, const char *fname)
+{
 	cairo_surface_t *cairo_surface;
 	cairo_status_t status;
 	int bpp = 4; /* Assume ARGB */
@@ -70,7 +74,8 @@ write_surface_as_png(const struct surface* weston_surface, const char *fname) {
  * when no longer used; or, NULL in case of error.
  */
 static struct surface*
-load_surface_from_png(const char *fname) {
+load_surface_from_png(const char *fname)
+{
 	struct surface *reference;
 	cairo_surface_t *reference_cairo_surface;
 	cairo_status_t status;
@@ -135,7 +140,8 @@ load_surface_from_png(const char *fname) {
  *  free'd when done using it.
  */
 static struct surface*
-create_screenshot_surface(struct client *client) {
+create_screenshot_surface(struct client *client)
+{
 	struct surface* screenshot;
 	screenshot = xzalloc(sizeof *screenshot);
 	if (screenshot == NULL)
@@ -160,7 +166,8 @@ create_screenshot_surface(struct client *client) {
  * longer needed.
  */
 static struct surface *
-capture_screenshot_of_output(struct client *client) {
+capture_screenshot_of_output(struct client *client)
+{
 	struct surface *screenshot;
 
 	/* Create a surface to hold the screenshot */
@@ -184,16 +191,19 @@ capture_screenshot_of_output(struct client *client) {
 }
 
 static void
-draw_stuff(char *pixels, int w, int h)
+draw_stuff(void *pixels, int w, int h)
 {
 	int x, y;
+	uint8_t r, g, b;
+	uint32_t *pixel;
 
 	for (x = 0; x < w; x++)
 		for (y = 0; y < h; y++) {
-			pixels[y * w * 4 + x * 4] = x;
-			pixels[y * w * 4 + x * 4 + 1] = x + y;
-			pixels[y * w * 4 + x * 4 + 2] = y;
-			pixels[y * w * 4 + x * 4 + 3] = 255;
+			b = x;
+			g = x + y;
+			r = y;
+			pixel = (uint32_t *)pixels + y * w + x;
+			*pixel = (255 << 24) | (r << 16) | (g << 8) | b;
 		}
 }
 

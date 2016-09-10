@@ -3,23 +3,24 @@
  * Copyright © 2011-2012 Collabora, Ltd.
  * Copyright © 2013 Raspberry Pi Foundation
  *
- * Permission to use, copy, modify, distribute, and sell this software and
- * its documentation for any purpose is hereby granted without fee, provided
- * that the above copyright notice appear in all copies and that both that
- * copyright notice and this permission notice appear in supporting
- * documentation, and that the name of the copyright holders not be used in
- * advertising or publicity pertaining to distribution of the software
- * without specific, written prior permission.  The copyright holders make
- * no representations about the suitability of this software for any
- * purpose.  It is provided "as is" without express or implied warranty.
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
  *
- * THE COPYRIGHT HOLDERS DISCLAIM ALL WARRANTIES WITH REGARD TO THIS
- * SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
- * FITNESS, IN NO EVENT SHALL THE COPYRIGHT HOLDERS BE LIABLE FOR ANY
- * SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER
- * RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF
- * CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
- * CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ * The above copyright notice and this permission notice (including the next
+ * paragraph) shall be included in all copies or substantial portions of the
+ * Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+ * DEALINGS IN THE SOFTWARE.
  */
 
 #include <stdbool.h>
@@ -147,6 +148,8 @@ struct desktop_shell {
 	bool showing_input_panels;
 	bool prepare_event_sent;
 
+	struct text_backend *text_backend;
+
 	struct {
 		struct weston_surface *surface;
 		pixman_box32_t cursor_rectangle;
@@ -170,14 +173,6 @@ struct desktop_shell {
 		struct workspace *anim_from;
 		struct workspace *anim_to;
 	} workspaces;
-
-	struct {
-		char *path;
-		int duration;
-		struct wl_resource *binding;
-		struct weston_process process;
-		struct wl_event_source *timer;
-	} screensaver;
 
 	struct {
 		struct wl_resource *binding;
@@ -227,14 +222,15 @@ struct workspace *
 get_current_workspace(struct desktop_shell *shell);
 
 void
-lower_fullscreen_layer(struct desktop_shell *shell);
+lower_fullscreen_layer(struct desktop_shell *shell,
+		       struct weston_output *lowering_output);
 
 void
 activate(struct desktop_shell *shell, struct weston_surface *es,
 	 struct weston_seat *seat, bool configure);
 
 void
-exposay_binding(struct weston_seat *seat,
+exposay_binding(struct weston_keyboard *keyboard,
 		enum weston_keyboard_modifier modifier,
 		void *data);
 int

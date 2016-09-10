@@ -2,23 +2,26 @@
  * Copyright © 2012 Intel Corporation
  * Copyright © 2015 Collabora, Ltd.
  *
- * Permission to use, copy, modify, distribute, and sell this software and
- * its documentation for any purpose is hereby granted without fee, provided
- * that the above copyright notice appear in all copies and that both that
- * copyright notice and this permission notice appear in supporting
- * documentation, and that the name of the copyright holders not be used in
- * advertising or publicity pertaining to distribution of the software
- * without specific, written prior permission.  The copyright holders make
- * no representations about the suitability of this software for any
- * purpose.  It is provided "as is" without express or implied warranty.
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files (the
+ * "Software"), to deal in the Software without restriction, including
+ * without limitation the rights to use, copy, modify, merge, publish,
+ * distribute, sublicense, and/or sell copies of the Software, and to
+ * permit persons to whom the Software is furnished to do so, subject to
+ * the following conditions:
  *
- * THE COPYRIGHT HOLDERS DISCLAIM ALL WARRANTIES WITH REGARD TO THIS
- * SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
- * FITNESS, IN NO EVENT SHALL THE COPYRIGHT HOLDERS BE LIABLE FOR ANY
- * SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER
- * RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF
- * CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
- * CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ * The above copyright notice and this permission notice (including the
+ * next paragraph) shall be included in all copies or substantial
+ * portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT.  IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+ * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 
 #include "config.h"
@@ -33,13 +36,15 @@
 #include <float.h>
 #include <assert.h>
 #include <linux/input.h>
+#include <drm_fourcc.h>
 
 #include "gl-renderer.h"
 #include "vertex-clipping.h"
+#include "linux-dmabuf.h"
+#include "linux-dmabuf-server-protocol.h"
 
+#include "shared/helpers.h"
 #include "weston-egl-ext.h"
-
-static int JYJ_ENABLE_BACKGROUND_ALPHA = 0;
 
 struct gl_shader {
 	GLuint program;
@@ -88,6 +93,18 @@ enum buffer_type {
 	BUFFER_TYPE_EGL
 };
 
+struct gl_renderer;
+
+struct egl_image {
+	struct gl_renderer *renderer;
+	EGLImageKHR image;
+	int refcount;
+
+	/* Only used for dmabuf imported buffer */
+	struct linux_dmabuf_buffer *dmabuf;
+	struct wl_list link;
+};
+
 struct gl_surface_state {
 	GLfloat color[4];
 	struct gl_shader *shader;
@@ -103,7 +120,7 @@ struct gl_surface_state {
 	GLenum gl_format;
 	GLenum gl_pixel_type;
 
-	EGLImageKHR images[3];
+	struct egl_image* images[3];
 	GLenum target;
 	int num_images;
 
@@ -156,6 +173,9 @@ struct gl_renderer {
 
 	int has_configless_context;
 
+	int has_dmabuf_import;
+	struct wl_list dmabuf_images;
+
 	struct gl_shader texture_shader_rgba;
 	struct gl_shader texture_shader_rgbx;
 	struct gl_shader texture_shader_egl_external;
@@ -193,6 +213,56 @@ static inline struct gl_renderer *
 get_renderer(struct weston_compositor *ec)
 {
 	return (struct gl_renderer *)ec->renderer;
+}
+
+static struct egl_image*
+egl_image_create(struct gl_renderer *gr, EGLenum target,
+		 EGLClientBuffer buffer, const EGLint *attribs)
+{
+	struct egl_image *img;
+
+	img = zalloc(sizeof *img);
+	wl_list_init(&img->link);
+	img->renderer = gr;
+	img->refcount = 1;
+	img->image = gr->create_image(gr->egl_display, EGL_NO_CONTEXT,
+				      target, buffer, attribs);
+
+	if (img->image == EGL_NO_IMAGE_KHR) {
+		free(img);
+		return NULL;
+	}
+
+	return img;
+}
+
+static struct egl_image*
+egl_image_ref(struct egl_image *image)
+{
+	image->refcount++;
+
+	return image;
+}
+
+static int
+egl_image_unref(struct egl_image *image)
+{
+	struct gl_renderer *gr = image->renderer;
+
+	assert(image->refcount > 0);
+
+	image->refcount--;
+	if (image->refcount > 0)
+		return image->refcount;
+
+	if (image->dmabuf)
+		linux_dmabuf_buffer_set_user_data(image->dmabuf, NULL, NULL);
+
+	gr->destroy_image(gr->egl_display, image->image);
+	wl_list_remove(&image->link);
+	free(image);
+
+	return 0;
 }
 
 static const char *
@@ -622,10 +692,7 @@ draw_view(struct weston_view *ev, struct weston_output *output,
 	if (!pixman_region32_not_empty(&repaint))
 		goto out;
 
-	if (JYJ_ENABLE_BACKGROUND_ALPHA == 1)
-		glBlendFunc(GL_ONE, GL_SRC_COLOR);
-	else
-		glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+	glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
 
 	if (gr->fan_debug) {
 		use_shader(gr, &gr->solid_shader);
@@ -705,11 +772,8 @@ repaint_views(struct weston_output *output, pixman_region32_t *damage)
 	struct weston_view *view;
 
 	wl_list_for_each_reverse(view, &compositor->view_list, link)
-		if (view->plane == &compositor->primary_plane) {
-			JYJ_ENABLE_BACKGROUND_ALPHA++;
+		if (view->plane == &compositor->primary_plane)
 			draw_view(view, output, damage);
-		}
-	JYJ_ENABLE_BACKGROUND_ALPHA = 0;
 }
 
 static void
@@ -1294,8 +1358,10 @@ gl_renderer_attach_egl(struct weston_surface *es, struct weston_buffer *buffer,
 	gr->query_buffer(gr->egl_display, buffer->legacy_buffer,
 			 EGL_WAYLAND_Y_INVERTED_WL, &buffer->y_inverted);
 
-	for (i = 0; i < gs->num_images; i++)
-		gr->destroy_image(gr->egl_display, gs->images[i]);
+	for (i = 0; i < gs->num_images; i++) {
+		egl_image_unref(gs->images[i]);
+		gs->images[i] = NULL;
+	}
 	gs->num_images = 0;
 	gs->target = GL_TEXTURE_2D;
 	switch (format) {
@@ -1329,8 +1395,7 @@ gl_renderer_attach_egl(struct weston_surface *es, struct weston_buffer *buffer,
 		attribs[0] = EGL_WAYLAND_PLANE_WL;
 		attribs[1] = i;
 		attribs[2] = EGL_NONE;
-		gs->images[i] = gr->create_image(gr->egl_display,
-						 NULL,
+		gs->images[i] = egl_image_create(gr,
 						 EGL_WAYLAND_BUFFER_WL,
 						 buffer->legacy_buffer,
 						 attribs);
@@ -1343,8 +1408,205 @@ gl_renderer_attach_egl(struct weston_surface *es, struct weston_buffer *buffer,
 		glActiveTexture(GL_TEXTURE0 + i);
 		glBindTexture(gs->target, gs->textures[i]);
 		gr->image_target_texture_2d(gs->target,
-					    gs->images[i]);
+					    gs->images[i]->image);
 	}
+
+	gs->pitch = buffer->width;
+	gs->height = buffer->height;
+	gs->buffer_type = BUFFER_TYPE_EGL;
+	gs->y_inverted = buffer->y_inverted;
+}
+
+static void
+gl_renderer_destroy_dmabuf(struct linux_dmabuf_buffer *dmabuf)
+{
+	struct egl_image *image = dmabuf->user_data;
+
+	egl_image_unref(image);
+}
+
+static struct egl_image *
+import_dmabuf(struct gl_renderer *gr,
+	      struct linux_dmabuf_buffer *dmabuf)
+{
+	struct egl_image *image;
+	EGLint attribs[30];
+	int atti = 0;
+
+	image = linux_dmabuf_buffer_get_user_data(dmabuf);
+	if (image)
+		return egl_image_ref(image);
+
+	/* This requires the Mesa commit in
+	 * Mesa 10.3 (08264e5dad4df448e7718e782ad9077902089a07) or
+	 * Mesa 10.2.7 (55d28925e6109a4afd61f109e845a8a51bd17652).
+	 * Otherwise Mesa closes the fd behind our back and re-importing
+	 * will fail.
+	 * https://bugs.freedesktop.org/show_bug.cgi?id=76188
+	 */
+
+	attribs[atti++] = EGL_WIDTH;
+	attribs[atti++] = dmabuf->width;
+	attribs[atti++] = EGL_HEIGHT;
+	attribs[atti++] = dmabuf->height;
+	attribs[atti++] = EGL_LINUX_DRM_FOURCC_EXT;
+	attribs[atti++] = dmabuf->format;
+	/* XXX: Add modifier here when supported */
+
+	if (dmabuf->n_planes > 0) {
+		attribs[atti++] = EGL_DMA_BUF_PLANE0_FD_EXT;
+		attribs[atti++] = dmabuf->dmabuf_fd[0];
+		attribs[atti++] = EGL_DMA_BUF_PLANE0_OFFSET_EXT;
+		attribs[atti++] = dmabuf->offset[0];
+		attribs[atti++] = EGL_DMA_BUF_PLANE0_PITCH_EXT;
+		attribs[atti++] = dmabuf->stride[0];
+	}
+
+	if (dmabuf->n_planes > 1) {
+		attribs[atti++] = EGL_DMA_BUF_PLANE1_FD_EXT;
+		attribs[atti++] = dmabuf->dmabuf_fd[1];
+		attribs[atti++] = EGL_DMA_BUF_PLANE1_OFFSET_EXT;
+		attribs[atti++] = dmabuf->offset[1];
+		attribs[atti++] = EGL_DMA_BUF_PLANE1_PITCH_EXT;
+		attribs[atti++] = dmabuf->stride[1];
+	}
+
+	if (dmabuf->n_planes > 2) {
+		attribs[atti++] = EGL_DMA_BUF_PLANE2_FD_EXT;
+		attribs[atti++] = dmabuf->dmabuf_fd[2];
+		attribs[atti++] = EGL_DMA_BUF_PLANE2_OFFSET_EXT;
+		attribs[atti++] = dmabuf->offset[2];
+		attribs[atti++] = EGL_DMA_BUF_PLANE2_PITCH_EXT;
+		attribs[atti++] = dmabuf->stride[2];
+	}
+
+	attribs[atti++] = EGL_NONE;
+
+	image = egl_image_create(gr, EGL_LINUX_DMA_BUF_EXT, NULL,
+				 attribs);
+
+	if (!image)
+		return NULL;
+
+	/* The cache owns one ref. The caller gets another. */
+	image->dmabuf = dmabuf;
+	wl_list_insert(&gr->dmabuf_images, &image->link);
+	linux_dmabuf_buffer_set_user_data(dmabuf, egl_image_ref(image),
+		gl_renderer_destroy_dmabuf);
+
+	return image;
+}
+
+static bool
+gl_renderer_import_dmabuf(struct weston_compositor *ec,
+			  struct linux_dmabuf_buffer *dmabuf)
+{
+	struct gl_renderer *gr = get_renderer(ec);
+	struct egl_image *image;
+	int i;
+
+	assert(gr->has_dmabuf_import);
+
+	for (i = 0; i < dmabuf->n_planes; i++) {
+		/* EGL import does not have modifiers */
+		if (dmabuf->modifier[i] != 0)
+			return false;
+	}
+
+	/* reject all flags we do not recognize or handle */
+	if (dmabuf->flags & ~ZLINUX_BUFFER_PARAMS_FLAGS_Y_INVERT)
+		return false;
+
+	image = import_dmabuf(gr, dmabuf);
+	if (!image)
+		return false;
+
+	/* Cache retains a ref. */
+	egl_image_unref(image);
+
+	return true;
+}
+
+static GLenum
+choose_texture_target(struct linux_dmabuf_buffer *dmabuf)
+{
+	if (dmabuf->n_planes > 1)
+		return GL_TEXTURE_EXTERNAL_OES;
+
+	switch (dmabuf->format & ~DRM_FORMAT_BIG_ENDIAN) {
+	case DRM_FORMAT_YUYV:
+	case DRM_FORMAT_YVYU:
+	case DRM_FORMAT_UYVY:
+	case DRM_FORMAT_VYUY:
+	case DRM_FORMAT_AYUV:
+		return GL_TEXTURE_EXTERNAL_OES;
+	default:
+		return GL_TEXTURE_2D;
+	}
+}
+
+static void
+gl_renderer_attach_dmabuf(struct weston_surface *surface,
+			  struct weston_buffer *buffer,
+			  struct linux_dmabuf_buffer *dmabuf)
+{
+	struct gl_renderer *gr = get_renderer(surface->compositor);
+	struct gl_surface_state *gs = get_surface_state(surface);
+	int i;
+
+	if (!gr->has_dmabuf_import) {
+		linux_dmabuf_buffer_send_server_error(dmabuf,
+				"EGL dmabuf import not supported");
+		return;
+	}
+
+	buffer->width = dmabuf->width;
+	buffer->height = dmabuf->height;
+	buffer->y_inverted =
+		!!(dmabuf->flags & ZLINUX_BUFFER_PARAMS_FLAGS_Y_INVERT);
+
+	for (i = 0; i < gs->num_images; i++)
+		egl_image_unref(gs->images[i]);
+	gs->num_images = 0;
+
+	gs->target = choose_texture_target(dmabuf);
+	switch (gs->target) {
+	case GL_TEXTURE_2D:
+		gs->shader = &gr->texture_shader_rgba;
+		break;
+	default:
+		gs->shader = &gr->texture_shader_egl_external;
+	}
+
+	/*
+	 * We try to always hold an imported EGLImage from the dmabuf
+	 * to prevent the client from preventing re-imports. But, we also
+	 * need to re-import every time the contents may change because
+	 * GL driver's caching may need flushing.
+	 *
+	 * Here we release the cache reference which has to be final.
+	 */
+	gs->images[0] = linux_dmabuf_buffer_get_user_data(dmabuf);
+	if (gs->images[0]) {
+		int ret;
+
+		ret = egl_image_unref(gs->images[0]);
+		assert(ret == 0);
+	}
+
+	gs->images[0] = import_dmabuf(gr, dmabuf);
+	if (!gs->images[0]) {
+		linux_dmabuf_buffer_send_server_error(dmabuf,
+				"EGL dmabuf import failed");
+		return;
+	}
+	gs->num_images = 1;
+
+	ensure_textures(gs, 1);
+
+	glActiveTexture(GL_TEXTURE0);
+	glBindTexture(gs->target, gs->textures[0]);
+	gr->image_target_texture_2d(gs->target, gs->images[0]->image);
 
 	gs->pitch = buffer->width;
 	gs->height = buffer->height;
@@ -1359,6 +1621,7 @@ gl_renderer_attach(struct weston_surface *es, struct weston_buffer *buffer)
 	struct gl_renderer *gr = get_renderer(ec);
 	struct gl_surface_state *gs = get_surface_state(es);
 	struct wl_shm_buffer *shm_buffer;
+	struct linux_dmabuf_buffer *dmabuf;
 	EGLint format;
 	int i;
 
@@ -1366,7 +1629,7 @@ gl_renderer_attach(struct weston_surface *es, struct weston_buffer *buffer)
 
 	if (!buffer) {
 		for (i = 0; i < gs->num_images; i++) {
-			gr->destroy_image(gr->egl_display, gs->images[i]);
+			egl_image_unref(gs->images[i]);
 			gs->images[i] = NULL;
 		}
 		gs->num_images = 0;
@@ -1384,6 +1647,8 @@ gl_renderer_attach(struct weston_surface *es, struct weston_buffer *buffer)
 	else if (gr->query_buffer(gr->egl_display, (void *) buffer->resource,
 				  EGL_TEXTURE_FORMAT, &format))
 		gl_renderer_attach_egl(es, buffer, format);
+	else if ((dmabuf = linux_dmabuf_buffer_get(buffer->resource)))
+		gl_renderer_attach_dmabuf(es, buffer, dmabuf);
 	else {
 		weston_log("unhandled buffer type!\n");
 		weston_buffer_reference(&gs->buffer_ref, NULL);
@@ -1568,7 +1833,7 @@ surface_state_destroy(struct gl_surface_state *gs, struct gl_renderer *gr)
 	glDeleteTextures(gs->num_textures, gs->textures);
 
 	for (i = 0; i < gs->num_images; i++)
-		gr->destroy_image(gr->egl_display, gs->images[i]);
+		egl_image_unref(gs->images[i]);
 
 	weston_buffer_reference(&gs->buffer_ref, NULL);
 	pixman_region32_fini(&gs->texture_damage);
@@ -2105,6 +2370,7 @@ static void
 gl_renderer_destroy(struct weston_compositor *ec)
 {
 	struct gl_renderer *gr = get_renderer(ec);
+	struct egl_image *image, *next;
 
 	wl_signal_emit(&gr->destroy_signal, gr);
 
@@ -2115,6 +2381,14 @@ gl_renderer_destroy(struct weston_compositor *ec)
 	eglMakeCurrent(gr->egl_display,
 		       EGL_NO_SURFACE, EGL_NO_SURFACE,
 		       EGL_NO_CONTEXT);
+
+
+	wl_list_for_each_safe(image, next, &gr->dmabuf_images, link) {
+		int ret;
+
+		ret = egl_image_unref(image);
+		assert(ret == 0);
+	}
 
 	eglTerminate(gr->egl_display);
 	eglReleaseThread();
@@ -2197,6 +2471,11 @@ gl_renderer_setup_egl_extensions(struct weston_compositor *ec)
 #ifdef EGL_MESA_configless_context
 	if (strstr(extensions, "EGL_MESA_configless_context"))
 		gr->has_configless_context = 1;
+#endif
+
+#ifdef EGL_EXT_image_dma_buf_import
+	if (strstr(extensions, "EGL_EXT_image_dma_buf_import"))
+		gr->has_dmabuf_import = 1;
 #endif
 
 	renderer_setup_egl_client_extensions(gr);
@@ -2359,18 +2638,18 @@ gl_renderer_create(struct weston_compositor *ec, EGLenum platform,
 
 	if (gr->egl_display == EGL_NO_DISPLAY) {
 		weston_log("failed to create display\n");
-		goto err_egl;
+		goto fail;
 	}
 
 	if (!eglInitialize(gr->egl_display, &major, &minor)) {
 		weston_log("failed to initialize display\n");
-		goto err_egl;
+		goto fail_with_error;
 	}
 
 	if (egl_choose_config(gr, attribs, visual_id,
 			      n_ids, &gr->egl_config) < 0) {
 		weston_log("failed to choose EGL config\n");
-		goto err_config;
+		goto fail_terminate;
 	}
 
 	ec->renderer = &gr->base;
@@ -2379,7 +2658,11 @@ gl_renderer_create(struct weston_compositor *ec, EGLenum platform,
 	ec->capabilities |= WESTON_CAP_VIEW_CLIP_MASK;
 
 	if (gl_renderer_setup_egl_extensions(ec) < 0)
-		goto err_egl;
+		goto fail_with_error;
+
+	wl_list_init(&gr->dmabuf_images);
+	if (gr->has_dmabuf_import)
+		gr->base.import_dmabuf = gl_renderer_import_dmabuf;
 
 	wl_display_add_shm_format(ec->wl_display, WL_SHM_FORMAT_RGB565);
 
@@ -2387,9 +2670,11 @@ gl_renderer_create(struct weston_compositor *ec, EGLenum platform,
 
 	return 0;
 
-err_egl:
+fail_with_error:
 	gl_renderer_print_egl_error_state();
-err_config:
+fail_terminate:
+	eglTerminate(gr->egl_display);
+fail:
 	free(gr);
 	return -1;
 }
@@ -2433,8 +2718,8 @@ compile_shaders(struct weston_compositor *ec)
 }
 
 static void
-fragment_debug_binding(struct weston_seat *seat, uint32_t time, uint32_t key,
-		       void *data)
+fragment_debug_binding(struct weston_keyboard *keyboard, uint32_t time,
+		       uint32_t key, void *data)
 {
 	struct weston_compositor *ec = data;
 	struct gl_renderer *gr = get_renderer(ec);
@@ -2459,8 +2744,8 @@ fragment_debug_binding(struct weston_seat *seat, uint32_t time, uint32_t key,
 }
 
 static void
-fan_debug_repaint_binding(struct weston_seat *seat, uint32_t time, uint32_t key,
-		      void *data)
+fan_debug_repaint_binding(struct weston_keyboard *keyboard, uint32_t time,
+			  uint32_t key, void *data)
 {
 	struct weston_compositor *compositor = data;
 	struct gl_renderer *gr = get_renderer(compositor);

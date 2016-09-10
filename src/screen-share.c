@@ -2,23 +2,26 @@
  * Copyright © 2008-2011 Kristian Høgsberg
  * Copyright © 2014 Jason Ekstrand
  *
- * Permission to use, copy, modify, distribute, and sell this software and
- * its documentation for any purpose is hereby granted without fee, provided
- * that the above copyright notice appear in all copies and that both that
- * copyright notice and this permission notice appear in supporting
- * documentation, and that the name of the copyright holders not be used in
- * advertising or publicity pertaining to distribution of the software
- * without specific, written prior permission.  The copyright holders make
- * no representations about the suitability of this software for any
- * purpose.  It is provided "as is" without express or implied warranty.
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files (the
+ * "Software"), to deal in the Software without restriction, including
+ * without limitation the rights to use, copy, modify, merge, publish,
+ * distribute, sublicense, and/or sell copies of the Software, and to
+ * permit persons to whom the Software is furnished to do so, subject to
+ * the following conditions:
  *
- * THE COPYRIGHT HOLDERS DISCLAIM ALL WARRANTIES WITH REGARD TO THIS
- * SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
- * FITNESS, IN NO EVENT SHALL THE COPYRIGHT HOLDERS BE LIABLE FOR ANY
- * SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER
- * RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF
- * CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
- * CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ * The above copyright notice and this permission notice (including the
+ * next paragraph) shall be included in all copies or substantial
+ * portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT.  IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+ * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 
 #include "config.h"
@@ -37,7 +40,8 @@
 #include <wayland-client.h>
 
 #include "compositor.h"
-#include "../shared/os-compatibility.h"
+#include "shared/helpers.h"
+#include "shared/os-compatibility.h"
 #include "fullscreen-shell-client-protocol.h"
 
 struct shared_output {
@@ -169,7 +173,7 @@ static const struct wl_pointer_listener ss_seat_pointer_listener = {
 };
 
 static void
-ss_seat_handle_keymap(void *data, struct wl_keyboard *keyboard,
+ss_seat_handle_keymap(void *data, struct wl_keyboard *wl_keyboard,
 		      uint32_t format, int fd, uint32_t size)
 {
 	struct ss_seat *seat = data;
@@ -209,7 +213,7 @@ ss_seat_handle_keymap(void *data, struct wl_keyboard *keyboard,
 
 	close(fd);
 
-	if (seat->base.keyboard)
+	if (seat->base.keyboard_device_count)
 		weston_seat_update_keymap(&seat->base, keymap);
 	else
 		weston_seat_init_keyboard(&seat->base, keymap);
@@ -260,13 +264,14 @@ ss_seat_handle_key(void *data, struct wl_keyboard *keyboard,
 }
 
 static void
-ss_seat_handle_modifiers(void *data, struct wl_keyboard *keyboard,
+ss_seat_handle_modifiers(void *data, struct wl_keyboard *wl_keyboard,
 			 uint32_t serial_in, uint32_t mods_depressed,
 			 uint32_t mods_latched, uint32_t mods_locked,
 			 uint32_t group)
 {
 	struct ss_seat *seat = data;
-	struct weston_compositor *c = seat->output->output->compositor;
+	struct weston_compositor *c = seat->base.compositor;
+	struct weston_keyboard *keyboard;
 	uint32_t serial_out;
 
 	/* If we get a key event followed by a modifier event with the
@@ -277,7 +282,8 @@ ss_seat_handle_modifiers(void *data, struct wl_keyboard *keyboard,
 	else
 		serial_out = wl_display_next_serial(c->wl_display);
 
-	xkb_state_update_mask(seat->base.keyboard->xkb_state.state,
+	keyboard = weston_seat_get_keyboard(&seat->base);
+	xkb_state_update_mask(keyboard->xkb_state.state,
 			      mods_depressed, mods_latched,
 			      mods_locked, 0, 0, group);
 	notify_modifiers(&seat->base, serial_out);
@@ -410,7 +416,7 @@ shared_output_get_shm_buffer(struct shared_output *so)
 	    so->shm.height != height) {
 
 		/* Destroy free buffers */
-		wl_list_for_each_safe(sb, bnext, &so->shm.free_buffers, link)
+		wl_list_for_each_safe(sb, bnext, &so->shm.free_buffers, free_link)
 			ss_shm_buffer_destroy(sb);
 
 		/* Orphan in-use buffers so they get destroyed */
@@ -971,7 +977,7 @@ shared_output_destroy(struct shared_output *so)
 
 	wl_list_for_each_safe(buffer, bnext, &so->shm.buffers, link)
 		ss_shm_buffer_destroy(buffer);
-	wl_list_for_each_safe(buffer, bnext, &so->shm.free_buffers, link)
+	wl_list_for_each_safe(buffer, bnext, &so->shm.free_buffers, free_link)
 		ss_shm_buffer_destroy(buffer);
 
 	wl_display_disconnect(so->parent.display);
@@ -1062,20 +1068,22 @@ weston_output_find(struct weston_compositor *c, int32_t x, int32_t y)
 }
 
 static void
-share_output_binding(struct weston_seat *seat, uint32_t time, uint32_t key,
+share_output_binding(struct weston_keyboard *keyboard, uint32_t time, uint32_t key,
 		     void *data)
 {
 	struct weston_output *output;
+	struct weston_pointer *pointer;
 	struct screen_share *ss = data;
 
-	if (!seat->pointer) {
+	pointer = weston_seat_get_pointer(keyboard->seat);
+	if (!pointer) {
 		weston_log("Cannot pick output: Seat does not have pointer\n");
 		return;
 	}
 
-	output = weston_output_find(seat->compositor,
-				    wl_fixed_to_int(seat->pointer->x),
-				    wl_fixed_to_int(seat->pointer->y));
+	output = weston_output_find(pointer->seat->compositor,
+				    wl_fixed_to_int(pointer->x),
+				    wl_fixed_to_int(pointer->y));
 	if (!output) {
 		weston_log("Cannot pick output: Pointer not on any output\n");
 		return;

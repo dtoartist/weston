@@ -1,2 +1,0 @@
-# weston
-My Development Weston

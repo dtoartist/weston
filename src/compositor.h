@@ -2,23 +2,26 @@
  * Copyright © 2008-2011 Kristian Høgsberg
  * Copyright © 2012 Collabora, Ltd.
  *
- * Permission to use, copy, modify, distribute, and sell this software and
- * its documentation for any purpose is hereby granted without fee, provided
- * that the above copyright notice appear in all copies and that both that
- * copyright notice and this permission notice appear in supporting
- * documentation, and that the name of the copyright holders not be used in
- * advertising or publicity pertaining to distribution of the software
- * without specific, written prior permission.  The copyright holders make
- * no representations about the suitability of this software for any
- * purpose.  It is provided "as is" without express or implied warranty.
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files (the
+ * "Software"), to deal in the Software without restriction, including
+ * without limitation the rights to use, copy, modify, merge, publish,
+ * distribute, sublicense, and/or sell copies of the Software, and to
+ * permit persons to whom the Software is furnished to do so, subject to
+ * the following conditions:
  *
- * THE COPYRIGHT HOLDERS DISCLAIM ALL WARRANTIES WITH REGARD TO THIS
- * SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
- * FITNESS, IN NO EVENT SHALL THE COPYRIGHT HOLDERS BE LIABLE FOR ANY
- * SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER
- * RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF
- * CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
- * CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ * The above copyright notice and this permission notice (including the
+ * next paragraph) shall be included in all copies or substantial
+ * portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT.  IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+ * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 
 #ifndef _WAYLAND_SYSTEM_COMPOSITOR_H_
@@ -42,16 +45,6 @@ extern "C" {
 #include "zalloc.h"
 #include "timeline-object.h"
 
-#ifndef MIN
-#define MIN(x,y) (((x) < (y)) ? (x) : (y))
-#endif
-
-#define ARRAY_LENGTH(a) (sizeof (a) / sizeof (a)[0])
-
-#define container_of(ptr, type, member) ({				\
-	const __typeof__( ((type *)0)->member ) *__mptr = (ptr);	\
-	(type *)( (char *)__mptr - offsetof(type,member) );})
-
 struct weston_transform {
 	struct weston_matrix matrix;
 	struct wl_list link;
@@ -63,6 +56,8 @@ struct shell_surface;
 struct weston_seat;
 struct weston_output;
 struct input_method;
+struct weston_pointer;
+struct linux_dmabuf_buffer;
 
 enum weston_keyboard_modifier {
 	MODIFIER_CTRL = (1 << 0),
@@ -113,16 +108,14 @@ struct weston_shell_interface {
 			       struct weston_output *output);
 	void (*set_xwayland)(struct shell_surface *shsurf,
 			       int x, int y, uint32_t flags);
-	int (*move)(struct shell_surface *shsurf, struct weston_seat *ws);
+	int (*move)(struct shell_surface *shsurf, struct weston_pointer *pointer);
 	int (*resize)(struct shell_surface *shsurf,
-		      struct weston_seat *ws, uint32_t edges);
+		      struct weston_pointer *pointer, uint32_t edges);
 	void (*set_title)(struct shell_surface *shsurf,
 	                  const char *title);
 	void (*set_window_geometry)(struct shell_surface *shsurf,
 				    int32_t x, int32_t y,
 				    int32_t width, int32_t height);
-	void (*set_overlay_priority)(struct shell_surface *shsurf,
-                                    uint32_t ovp_order);
 	void (*set_maximized)(struct shell_surface *shsurf);
 	void (*set_pid)(struct shell_surface *shsurf, pid_t pid);
 };
@@ -156,11 +149,12 @@ struct weston_fixed_point {
 };
 
 struct weston_output_zoom {
-	int active;
+	bool active;
 	float increment;
 	float level;
 	float max_level;
 	float trans_x, trans_y;
+	struct weston_seat *seat;
 	struct weston_animation animation_z;
 	struct weston_spring spring_z;
 	struct weston_fixed_point current;
@@ -246,7 +240,6 @@ struct weston_output {
 			  uint16_t *b);
 
 	struct weston_timeline_object timeline;
-	void (*set_ovp_order)(struct weston_output *output, uint32_t value);
 };
 
 struct weston_pointer_grab;
@@ -382,6 +375,8 @@ weston_pointer_set_focus(struct weston_pointer *pointer,
 			 struct weston_view *view,
 			 wl_fixed_t sx, wl_fixed_t sy);
 void
+weston_pointer_clear_focus(struct weston_pointer *pointer);
+void
 weston_pointer_start_grab(struct weston_pointer *pointer,
 			  struct weston_pointer_grab *grab);
 void
@@ -512,9 +507,9 @@ struct weston_seat {
 	struct wl_list base_resource_list;
 
 	struct wl_global *global;
-	struct weston_pointer *pointer;
-	struct weston_keyboard *keyboard;
-	struct weston_touch *touch;
+	struct weston_pointer *pointer_state;
+	struct weston_keyboard *keyboard_state;
+	struct weston_touch *touch_state;
 	int pointer_device_count;
 	int keyboard_device_count;
 	int touch_device_count;
@@ -594,6 +589,10 @@ struct weston_renderer {
 				    void *target, size_t size,
 				    int src_x, int src_y,
 				    int width, int height);
+
+	/** See weston_compositor_import_dmabuf() */
+	bool (*import_dmabuf)(struct weston_compositor *ec,
+			      struct linux_dmabuf_buffer *buffer);
 };
 
 enum weston_capability {
@@ -611,6 +610,11 @@ enum weston_capability {
 
 	/* renderer supports weston_view_set_mask() clipping */
 	WESTON_CAP_VIEW_CLIP_MASK		= 0x0010,
+};
+
+struct weston_backend {
+	void (*destroy)(struct weston_compositor *ec);
+	void (*restore)(struct weston_compositor *ec);
 };
 
 struct weston_compositor {
@@ -674,9 +678,7 @@ struct weston_compositor {
 
 	pixman_format_code_t read_format;
 
-	void (*destroy)(struct weston_compositor *ec);
-	void (*restore)(struct weston_compositor *ec);
-	int (*authenticate)(struct weston_compositor *c, uint32_t id);
+	struct weston_backend *backend;
 
 	struct weston_launcher *launcher;
 
@@ -696,6 +698,9 @@ struct weston_compositor {
 	int32_t repaint_msec;
 
 	int exit_code;
+
+	void *user_data;
+	void (*exit)(struct weston_compositor *c);
 };
 
 struct weston_buffer {
@@ -1153,7 +1158,7 @@ weston_compositor_pick_view(struct weston_compositor *compositor,
 
 
 struct weston_binding;
-typedef void (*weston_key_binding_handler_t)(struct weston_seat *seat,
+typedef void (*weston_key_binding_handler_t)(struct weston_keyboard *keyboard,
 					     uint32_t time, uint32_t key,
 					     void *data);
 struct weston_binding *
@@ -1163,7 +1168,7 @@ weston_compositor_add_key_binding(struct weston_compositor *compositor,
 				  weston_key_binding_handler_t binding,
 				  void *data);
 
-typedef void (*weston_modifier_binding_handler_t)(struct weston_seat *seat,
+typedef void (*weston_modifier_binding_handler_t)(struct weston_keyboard *keyboard,
 					          enum weston_keyboard_modifier modifier,
 					          void *data);
 struct weston_binding *
@@ -1172,7 +1177,7 @@ weston_compositor_add_modifier_binding(struct weston_compositor *compositor,
 				       weston_modifier_binding_handler_t binding,
 				       void *data);
 
-typedef void (*weston_button_binding_handler_t)(struct weston_seat *seat,
+typedef void (*weston_button_binding_handler_t)(struct weston_pointer *pointer,
 						uint32_t time, uint32_t button,
 						void *data);
 struct weston_binding *
@@ -1182,7 +1187,7 @@ weston_compositor_add_button_binding(struct weston_compositor *compositor,
 				     weston_button_binding_handler_t binding,
 				     void *data);
 
-typedef void (*weston_touch_binding_handler_t)(struct weston_seat *seat,
+typedef void (*weston_touch_binding_handler_t)(struct weston_touch *touch,
 					       uint32_t time,
 					       void *data);
 struct weston_binding *
@@ -1191,7 +1196,7 @@ weston_compositor_add_touch_binding(struct weston_compositor *compositor,
 				    weston_touch_binding_handler_t binding,
 				    void *data);
 
-typedef void (*weston_axis_binding_handler_t)(struct weston_seat *seat,
+typedef void (*weston_axis_binding_handler_t)(struct weston_pointer *pointer,
 					      uint32_t time, uint32_t axis,
 					      wl_fixed_t value, void *data);
 struct weston_binding *
@@ -1217,31 +1222,32 @@ weston_binding_list_destroy_all(struct wl_list *list);
 
 void
 weston_compositor_run_key_binding(struct weston_compositor *compositor,
-				  struct weston_seat *seat, uint32_t time,
+				  struct weston_keyboard *keyboard,
+				  uint32_t time,
 				  uint32_t key,
 				  enum wl_keyboard_key_state state);
 
 void
 weston_compositor_run_modifier_binding(struct weston_compositor *compositor,
-				       struct weston_seat *seat,
+				       struct weston_keyboard *keyboard,
 				       enum weston_keyboard_modifier modifier,
 				       enum wl_keyboard_key_state state);
 void
 weston_compositor_run_button_binding(struct weston_compositor *compositor,
-				     struct weston_seat *seat, uint32_t time,
+				     struct weston_pointer *pointer, uint32_t time,
 				     uint32_t button,
 				     enum wl_pointer_button_state value);
 void
 weston_compositor_run_touch_binding(struct weston_compositor *compositor,
-				    struct weston_seat *seat, uint32_t time,
+				    struct weston_touch *touch, uint32_t time,
 				    int touch_type);
 int
 weston_compositor_run_axis_binding(struct weston_compositor *compositor,
-				   struct weston_seat *seat, uint32_t time,
+				   struct weston_pointer *pointer, uint32_t time,
 				   uint32_t axis, int32_t value);
 int
 weston_compositor_run_debug_binding(struct weston_compositor *compositor,
-				    struct weston_seat *seat, uint32_t time,
+				    struct weston_keyboard *keyboard, uint32_t time,
 				    uint32_t key,
 				    enum wl_keyboard_key_state state);
 
@@ -1344,9 +1350,14 @@ weston_buffer_reference(struct weston_buffer_reference *ref,
 uint32_t
 weston_compositor_get_time(void);
 
-int
-weston_compositor_init(struct weston_compositor *ec, struct wl_display *display,
-		       int *argc, char *argv[], struct weston_config *config);
+void
+weston_compositor_destroy(struct weston_compositor *ec);
+struct weston_compositor *
+weston_compositor_create(struct wl_display *display, void *user_data);
+void
+weston_compositor_exit(struct weston_compositor *ec);
+void *
+weston_compositor_get_user_data(struct weston_compositor *compositor);
 int
 weston_compositor_set_presentation_clock(struct weston_compositor *compositor,
 					 clockid_t clk_id);
@@ -1358,6 +1369,10 @@ weston_compositor_read_presentation_clock(
 			const struct weston_compositor *compositor,
 			struct timespec *ts);
 
+bool
+weston_compositor_import_dmabuf(struct weston_compositor *compositor,
+				struct linux_dmabuf_buffer *buffer);
+
 void
 weston_compositor_shutdown(struct weston_compositor *ec);
 void
@@ -1368,7 +1383,8 @@ weston_output_init_zoom(struct weston_output *output);
 void
 weston_output_update_zoom(struct weston_output *output);
 void
-weston_output_activate_zoom(struct weston_output *output);
+weston_output_activate_zoom(struct weston_output *output,
+			    struct weston_seat *seat);
 void
 weston_output_update_matrix(struct weston_output *output);
 void
@@ -1467,8 +1483,13 @@ weston_screenshooter_shoot(struct weston_output *output, struct weston_buffer *b
 struct clipboard *
 clipboard_create(struct weston_seat *seat);
 
-int
+struct text_backend;
+
+struct text_backend *
 text_backend_init(struct weston_compositor *ec);
+
+void
+text_backend_destroy(struct text_backend *text_backend);
 
 struct weston_process;
 typedef void (*weston_process_cleanup_func_t)(struct weston_process *process,
@@ -1545,10 +1566,10 @@ weston_output_mode_switch_to_native(struct weston_output *output);
 int
 noop_renderer_init(struct weston_compositor *ec);
 
-struct weston_compositor *
-backend_init(struct wl_display *display, int *argc, char *argv[],
+int
+backend_init(struct weston_compositor *c,
+	     int *argc, char *argv[],
 	     struct weston_config *config);
-
 int
 module_init(struct weston_compositor *compositor,
 	    int *argc, char *argv[]);
@@ -1577,6 +1598,15 @@ weston_parse_transform(const char *transform, uint32_t *out);
 
 const char *
 weston_transform_to_string(uint32_t output_transform);
+
+struct weston_keyboard *
+weston_seat_get_keyboard(struct weston_seat *seat);
+
+struct weston_pointer *
+weston_seat_get_pointer(struct weston_seat *seat);
+
+struct weston_touch *
+weston_seat_get_touch(struct weston_seat *seat);
 
 #ifdef  __cplusplus
 }

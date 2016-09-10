@@ -1,23 +1,26 @@
 /*
  * Copyright (C) 2014 DENSO CORPORATION
  *
- * Permission to use, copy, modify, distribute, and sell this software and
- * its documentation for any purpose is hereby granted without fee, provided
- * that the above copyright notice appear in all copies and that both that
- * copyright notice and this permission notice appear in supporting
- * documentation, and that the name of the copyright holders not be used in
- * advertising or publicity pertaining to distribution of the software
- * without specific, written prior permission.  The copyright holders make
- * no representations about the suitability of this software for any
- * purpose.  It is provided "as is" without express or implied warranty.
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files (the
+ * "Software"), to deal in the Software without restriction, including
+ * without limitation the rights to use, copy, modify, merge, publish,
+ * distribute, sublicense, and/or sell copies of the Software, and to
+ * permit persons to whom the Software is furnished to do so, subject to
+ * the following conditions:
  *
- * THE COPYRIGHT HOLDERS DISCLAIM ALL WARRANTIES WITH REGARD TO THIS
- * SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
- * FITNESS, IN NO EVENT SHALL THE COPYRIGHT HOLDERS BE LIABLE FOR ANY
- * SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER
- * RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF
- * CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
- * CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ * The above copyright notice and this permission notice (including the
+ * next paragraph) shall be included in all copies or substantial
+ * portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT.  IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+ * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 
 /**
@@ -57,6 +60,7 @@
 
 #include "ivi-layout-export.h"
 #include "ivi-hmi-controller-server-protocol.h"
+#include "shared/helpers.h"
 
 /*****************************************************************************
  *  structure, globals
@@ -721,26 +725,8 @@ hmi_controller_create(struct weston_compositor *ec)
 	ivi_controller_interface->layer_set_visibility(
 		hmi_ctrl->workspace_background_layer.ivilayer, false);
 
-	/* init workspace ivi_layer */
-	hmi_ctrl->workspace_layer.x = hmi_ctrl->workspace_background_layer.x;
-	hmi_ctrl->workspace_layer.y = hmi_ctrl->workspace_background_layer.y;
-	hmi_ctrl->workspace_layer.width =
-		hmi_ctrl->workspace_background_layer.width;
-	hmi_ctrl->workspace_layer.height =
-		hmi_ctrl->workspace_background_layer.height;
-	hmi_ctrl->workspace_layer.id_layer =
-		hmi_ctrl->hmi_setting->workspace_layer_id;
-
-	create_layer(iviscrn, &hmi_ctrl->workspace_layer);
-	ivi_controller_interface->layer_set_opacity(hmi_ctrl->workspace_layer.ivilayer, 0);
-	ivi_controller_interface->layer_set_visibility(hmi_ctrl->workspace_layer.ivilayer,
-					false);
 
 	wl_list_init(&hmi_ctrl->workspace_fade.layer_list);
-	tmp_link_layer = MEM_ALLOC(sizeof(*tmp_link_layer));
-	tmp_link_layer->layout_layer = hmi_ctrl->workspace_layer.ivilayer;
-	wl_list_insert(&hmi_ctrl->workspace_fade.layer_list,
-		       &tmp_link_layer->link);
 	tmp_link_layer = MEM_ALLOC(sizeof(*tmp_link_layer));
 	tmp_link_layer->layout_layer =
 		hmi_ctrl->workspace_background_layer.ivilayer;
@@ -976,12 +962,11 @@ static void
 ivi_hmi_controller_add_launchers(struct hmi_controller *hmi_ctrl,
 				 int32_t icon_size)
 {
-	struct ivi_layout_layer *layer = hmi_ctrl->workspace_layer.ivilayer;
 	int32_t minspace_x = 10;
 	int32_t minspace_y = minspace_x;
 
-	int32_t width  = hmi_ctrl->workspace_layer.width;
-	int32_t height = hmi_ctrl->workspace_layer.height;
+	int32_t width  = hmi_ctrl->workspace_background_layer.width;
+	int32_t height = hmi_ctrl->workspace_background_layer.height;
 
 	int32_t x_count = (width - minspace_x) / (minspace_x + icon_size);
 	int32_t space_x = (int32_t)((width - x_count * icon_size) / (1.0 + x_count));
@@ -1010,6 +995,11 @@ ivi_hmi_controller_add_launchers(struct hmi_controller *hmi_ctrl,
 	int32_t ret = 0;
 	struct ivi_layout_surface* layout_surface = NULL;
 	uint32_t *add_surface_id = NULL;
+
+	struct ivi_layout_screen *iviscrn = NULL;
+	struct link_layer *tmp_link_layer = NULL;
+	struct ivi_layout_screen **pp_screen = NULL;
+	int32_t screen_length  = 0;
 
 	if (0 == x_count)
 		x_count = 1;
@@ -1087,14 +1077,8 @@ ivi_hmi_controller_add_launchers(struct hmi_controller *hmi_ctrl,
 			ivi_controller_interface->get_surface_from_id(data->surface_id);
 		assert(layout_surface);
 
-		ret = ivi_controller_interface->layer_add_surface(layer, layout_surface);
-		assert(!ret);
-
 		ret = ivi_controller_interface->surface_set_destination_rectangle(
 				layout_surface, x, y, icon_size, icon_size);
-		assert(!ret);
-
-		ret = ivi_controller_interface->surface_set_visibility(layout_surface, true);
 		assert(!ret);
 
 		nx++;
@@ -1103,6 +1087,43 @@ ivi_hmi_controller_add_launchers(struct hmi_controller *hmi_ctrl,
 			ny++;
 			nx = 0;
 		}
+	}
+
+	/* init workspace ivi_layer */
+	hmi_ctrl->workspace_layer.x = hmi_ctrl->workspace_background_layer.x;
+	hmi_ctrl->workspace_layer.y = hmi_ctrl->workspace_background_layer.y;
+	hmi_ctrl->workspace_layer.width =
+		hmi_ctrl->workspace_background_layer.width * hmi_ctrl->workspace_count;
+	hmi_ctrl->workspace_layer.height =
+		hmi_ctrl->workspace_background_layer.height;
+	hmi_ctrl->workspace_layer.id_layer =
+		hmi_ctrl->hmi_setting->workspace_layer_id;
+
+	ivi_controller_interface->get_screens(&screen_length, &pp_screen);
+	iviscrn = pp_screen[0];
+	free(pp_screen);
+	create_layer(iviscrn, &hmi_ctrl->workspace_layer);
+	ivi_controller_interface->layer_set_opacity(hmi_ctrl->workspace_layer.ivilayer, 0);
+	ivi_controller_interface->layer_set_visibility(hmi_ctrl->workspace_layer.ivilayer,
+					false);
+
+	tmp_link_layer = MEM_ALLOC(sizeof(*tmp_link_layer));
+	tmp_link_layer->layout_layer = hmi_ctrl->workspace_layer.ivilayer;
+	wl_list_insert(&hmi_ctrl->workspace_fade.layer_list,
+		       &tmp_link_layer->link);
+
+	/* Add surface to layer */
+	wl_array_for_each(data, &launchers) {
+		layout_surface =
+			ivi_controller_interface->get_surface_from_id(data->surface_id);
+		assert(layout_surface);
+
+		ret = ivi_controller_interface->layer_add_surface(hmi_ctrl->workspace_layer.ivilayer,
+								  layout_surface);
+		assert(!ret);
+
+		ret = ivi_controller_interface->surface_set_visibility(layout_surface, true);
+		assert(!ret);
 	}
 
 	wl_array_release(&launchers);
@@ -1266,8 +1287,8 @@ move_workspace_grab_end(struct move_grab *move, struct wl_resource* resource,
 					duration);
 	ivi_controller_interface->layer_set_destination_rectangle(layer,
 				end_pos, pos_y,
-				hmi_ctrl->workspace_background_layer.width,
-				hmi_ctrl->workspace_background_layer.height);
+				hmi_ctrl->workspace_layer.width,
+				hmi_ctrl->workspace_layer.height);
 	ivi_controller_interface->commit_changes();
 }
 
@@ -1465,15 +1486,18 @@ enum HMI_GRAB_DEVICE {
 static enum HMI_GRAB_DEVICE
 get_hmi_grab_device(struct weston_seat *seat, uint32_t serial)
 {
-	if (seat->pointer &&
-	    seat->pointer->focus &&
-	    seat->pointer->button_count &&
-	    seat->pointer->grab_serial == serial)
+	struct weston_pointer *pointer = weston_seat_get_pointer(seat);
+	struct weston_touch *touch = weston_seat_get_touch(seat);
+
+	if (pointer &&
+	    pointer->focus &&
+	    pointer->button_count &&
+	    pointer->grab_serial == serial)
 		return HMI_GRAB_DEVICE_POINTER;
 
-	if (seat->touch &&
-	    seat->touch->focus &&
-	    seat->touch->grab_serial == serial)
+	if (touch &&
+	    touch->focus &&
+	    touch->grab_serial == serial)
 		return HMI_GRAB_DEVICE_TOUCH;
 
 	return HMI_GRAB_DEVICE_NONE;
@@ -1564,6 +1588,9 @@ ivi_hmi_controller_workspace_control(struct wl_client *client,
 	struct pointer_move_grab *pnt_move_grab = NULL;
 	struct touch_move_grab *tch_move_grab = NULL;
 	struct weston_seat *seat = NULL;
+	struct weston_pointer *pointer;
+	struct weston_touch *touch;
+
 	enum HMI_GRAB_DEVICE device;
 
 	if (hmi_ctrl->workspace_count < 2)
@@ -1582,21 +1609,23 @@ ivi_hmi_controller_workspace_control(struct wl_client *client,
 
 	switch (device) {
 	case HMI_GRAB_DEVICE_POINTER:
-		pnt_move_grab = create_workspace_pointer_move(seat->pointer,
+		pointer = weston_seat_get_pointer(seat);
+		pnt_move_grab = create_workspace_pointer_move(pointer,
 							      resource);
 
 		pointer_grab_start(&pnt_move_grab->base, layer,
 				   &pointer_move_grab_workspace_interface,
-				   seat->pointer);
+				   pointer);
 		break;
 
 	case HMI_GRAB_DEVICE_TOUCH:
-		tch_move_grab = create_workspace_touch_move(seat->touch,
+		touch = weston_seat_get_touch(seat);
+		tch_move_grab = create_workspace_touch_move(touch,
 							    resource);
 
 		touch_grab_start(&tch_move_grab->base, layer,
 				 &touch_move_grab_workspace_interface,
-				 seat->touch);
+				 touch);
 		break;
 
 	default:

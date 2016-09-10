@@ -1,23 +1,26 @@
 /*
  * Copyright © 2012 Benjamin Franzke
  *
- * Permission to use, copy, modify, distribute, and sell this software and
- * its documentation for any purpose is hereby granted without fee, provided
- * that the above copyright notice appear in all copies and that both that
- * copyright notice and this permission notice appear in supporting
- * documentation, and that the name of the copyright holders not be used in
- * advertising or publicity pertaining to distribution of the software
- * without specific, written prior permission.  The copyright holders make
- * no representations about the suitability of this software for any
- * purpose.  It is provided "as is" without express or implied warranty.
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files (the
+ * "Software"), to deal in the Software without restriction, including
+ * without limitation the rights to use, copy, modify, merge, publish,
+ * distribute, sublicense, and/or sell copies of the Software, and to
+ * permit persons to whom the Software is furnished to do so, subject to
+ * the following conditions:
  *
- * THE COPYRIGHT HOLDERS DISCLAIM ALL WARRANTIES WITH REGARD TO THIS
- * SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
- * FITNESS, IN NO EVENT SHALL THE COPYRIGHT HOLDERS BE LIABLE FOR ANY
- * SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER
- * RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF
- * CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
- * CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ * The above copyright notice and this permission notice (including the
+ * next paragraph) shall be included in all copies or substantial
+ * portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT.  IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+ * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 
 #include "config.h"
@@ -114,7 +117,7 @@ read_groups(void)
 {
 	int n;
 	gid_t *groups;
-	
+
 	n = getgroups(0, NULL);
 
 	if (n < 0) {
@@ -174,7 +177,7 @@ weston_launch_allowed(struct weston_launch *wl)
 		free(session);
 	}
 #endif
-	
+
 	return false;
 }
 
@@ -224,7 +227,7 @@ setup_launcher_socket(struct weston_launch *wl)
 {
 	if (socketpair(AF_LOCAL, SOCK_SEQPACKET, 0, wl->sock) < 0)
 		error(1, errno, "socketpair failed");
-	
+
 	if (fcntl(wl->sock[0], F_SETFD, FD_CLOEXEC) < 0)
 		error(1, errno, "fcntl failed");
 
@@ -531,7 +534,7 @@ setup_tty(struct weston_launch *wl, const char *tty)
 			error(1, errno, "could not open tty0");
 
 		if (ioctl(tty0, VT_OPENQRY, &wl->ttynr) < 0 || wl->ttynr == -1)
-			error(1, errno, "failed to find non-opened console"); 
+			error(1, errno, "failed to find non-opened console");
 
 		snprintf(filename, sizeof filename, "/dev/tty%d", wl->ttynr);
 		wl->tty = open(filename, O_RDWR | O_NOCTTY);
@@ -600,7 +603,7 @@ setup_session(struct weston_launch *wl)
 	env = pam_getenvlist(wl->ph);
 	if (env) {
 		for (i = 0; env[i]; ++i) {
-			if (putenv(env[i]) < 0)
+			if (putenv(env[i]) != 0)
 				error(0, 0, "putenv %s failed", env[i]);
 		}
 		free(env);
@@ -680,7 +683,7 @@ main(int argc, char *argv[])
 		{ "verbose", no_argument,       NULL, 'v' },
 		{ "help",    no_argument,       NULL, 'h' },
 		{ 0,         0,                 NULL,  0  }
-	};	
+	};
 
 	memset(&wl, 0, sizeof wl);
 
@@ -735,10 +738,8 @@ main(int argc, char *argv[])
 		exit(EXIT_FAILURE);
 
 	wl.child = fork();
-	if (wl.child == -1) {
-		error(1, errno, "fork failed");
-		exit(EXIT_FAILURE);
-	}
+	if (wl.child == -1)
+		error(EXIT_FAILURE, errno, "fork failed");
 
 	if (wl.child == 0)
 		launch_compositor(&wl, argc - optind, argv + optind);

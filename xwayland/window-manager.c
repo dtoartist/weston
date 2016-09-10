@@ -1,23 +1,26 @@
 /*
  * Copyright © 2011 Intel Corporation
  *
- * Permission to use, copy, modify, distribute, and sell this software and
- * its documentation for any purpose is hereby granted without fee, provided
- * that the above copyright notice appear in all copies and that both that
- * copyright notice and this permission notice appear in supporting
- * documentation, and that the name of the copyright holders not be used in
- * advertising or publicity pertaining to distribution of the software
- * without specific, written prior permission.  The copyright holders make
- * no representations about the suitability of this software for any
- * purpose.  It is provided "as is" without express or implied warranty.
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files (the
+ * "Software"), to deal in the Software without restriction, including
+ * without limitation the rights to use, copy, modify, merge, publish,
+ * distribute, sublicense, and/or sell copies of the Software, and to
+ * permit persons to whom the Software is furnished to do so, subject to
+ * the following conditions:
  *
- * THE COPYRIGHT HOLDERS DISCLAIM ALL WARRANTIES WITH REGARD TO THIS
- * SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
- * FITNESS, IN NO EVENT SHALL THE COPYRIGHT HOLDERS BE LIABLE FOR ANY
- * SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER
- * RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF
- * CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
- * CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ * The above copyright notice and this permission notice (including the
+ * next paragraph) shall be included in all copies or substantial
+ * portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT.  IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+ * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 
 #include "config.h"
@@ -39,14 +42,15 @@
 #include "cairo-util.h"
 #include "compositor.h"
 #include "hash.h"
+#include "shared/helpers.h"
 
 struct wm_size_hints {
-    	uint32_t flags;
+	uint32_t flags;
 	int32_t x, y;
 	int32_t width, height;	/* should set so old wm's don't mess up */
 	int32_t min_width, min_height;
 	int32_t max_width, max_height;
-    	int32_t width_inc, height_inc;
+	int32_t width_inc, height_inc;
 	struct {
 		int32_t x;
 		int32_t y;
@@ -223,7 +227,7 @@ get_atom_name(xcb_connection_t *c, xcb_atom_t atom)
 	cookie = xcb_get_atom_name (c, atom);
 	reply = xcb_get_atom_name_reply (c, cookie, &e);
 
-	if(reply) {
+	if (reply) {
 		snprintf(buffer, sizeof buffer, "%.*s",
 			 xcb_get_atom_name_name_length (reply),
 			 xcb_get_atom_name_name (reply));
@@ -595,7 +599,7 @@ weston_wm_window_send_configure_notify(struct weston_wm_window *window)
 	configure_notify.override_redirect = 0;
 	configure_notify.pad1 = 0;
 
-	xcb_send_event(wm->conn, 0, window->id, 
+	xcb_send_event(wm->conn, 0, window->id,
 		       XCB_EVENT_MASK_STRUCTURE_NOTIFY,
 		       (char *) &configure_notify);
 }
@@ -603,7 +607,7 @@ weston_wm_window_send_configure_notify(struct weston_wm_window *window)
 static void
 weston_wm_handle_configure_request(struct weston_wm *wm, xcb_generic_event_t *event)
 {
-	xcb_configure_request_event_t *configure_request = 
+	xcb_configure_request_event_t *configure_request =
 		(xcb_configure_request_event_t *) event;
 	struct weston_wm_window *window;
 	uint32_t mask, values[16];
@@ -672,7 +676,7 @@ our_resource(struct weston_wm *wm, uint32_t id)
 static void
 weston_wm_handle_configure_notify(struct weston_wm *wm, xcb_generic_event_t *event)
 {
-	xcb_configure_notify_event_t *configure_notify = 
+	xcb_configure_notify_event_t *configure_notify =
 		(xcb_configure_notify_event_t *) event;
 	struct weston_wm_window *window;
 
@@ -726,21 +730,14 @@ weston_wm_create_surface(struct wl_listener *listener, void *data)
 			window->surface_id = 0;
 			wl_list_remove(&window->link);
 			break;
-		}	
+		}
 }
 
 static void
-weston_wm_window_activate(struct wl_listener *listener, void *data)
+weston_wm_send_focus_window(struct weston_wm *wm,
+			    struct weston_wm_window *window)
 {
-	struct weston_surface *surface = data;
-	struct weston_wm_window *window = NULL;
-	struct weston_wm *wm =
-		container_of(listener, struct weston_wm, activate_listener);
 	xcb_client_message_event_t client_message;
-
-	if (surface) {
-		window = get_wm_window(surface);
-	}
 
 	if (window) {
 		uint32_t values[1];
@@ -755,7 +752,7 @@ weston_wm_window_activate(struct wl_listener *listener, void *data)
 		client_message.data.data32[0] = wm->atom.wm_take_focus;
 		client_message.data.data32[1] = XCB_TIME_CURRENT_TIME;
 
-		xcb_send_event(wm->conn, 0, window->id, 
+		xcb_send_event(wm->conn, 0, window->id,
 			       XCB_EVENT_MASK_SUBSTRUCTURE_REDIRECT,
 			       (char *) &client_message);
 
@@ -771,6 +768,21 @@ weston_wm_window_activate(struct wl_listener *listener, void *data)
 				     XCB_NONE,
 				     XCB_TIME_CURRENT_TIME);
 	}
+}
+
+static void
+weston_wm_window_activate(struct wl_listener *listener, void *data)
+{
+	struct weston_surface *surface = data;
+	struct weston_wm_window *window = NULL;
+	struct weston_wm *wm =
+		container_of(listener, struct weston_wm, activate_listener);
+
+	if (surface) {
+		window = get_wm_window(surface);
+	}
+
+	weston_wm_send_focus_window(wm, window);
 
 	if (wm->focus_window) {
 		if (wm->focus_window->frame)
@@ -925,7 +937,7 @@ weston_wm_window_create_frame(struct weston_wm_window *window)
  */
 static void
 weston_wm_window_set_virtual_desktop(struct weston_wm_window *window,
-                                     int desktop)
+				     int desktop)
 {
 	if (desktop >= 0) {
 		xcb_change_property(window->wm->conn,
@@ -1075,13 +1087,13 @@ weston_wm_window_draw_decoration(void *data)
 
 	if (window->surface) {
 		pixman_region32_fini(&window->surface->pending.opaque);
-		if(window->has_alpha) {
+		if (window->has_alpha) {
 			pixman_region32_init(&window->surface->pending.opaque);
 		} else {
 			/* We leave an extra pixel around the X window area to
 			 * make sure we don't sample from the undefined alpha
 			 * channel when filtering. */
-			pixman_region32_init_rect(&window->surface->pending.opaque, 
+			pixman_region32_init_rect(&window->surface->pending.opaque,
 						  x - 1, y - 1,
 						  window->width + 2,
 						  window->height + 2);
@@ -1119,7 +1131,7 @@ weston_wm_window_schedule_repaint(struct weston_wm_window *window)
 		if (window->surface != NULL) {
 			weston_wm_window_get_frame_size(window, &width, &height);
 			pixman_region32_fini(&window->surface->pending.opaque);
-			if(window->has_alpha) {
+			if (window->has_alpha) {
 				pixman_region32_init(&window->surface->pending.opaque);
 			} else {
 				pixman_region32_init_rect(&window->surface->pending.opaque, 0, 0,
@@ -1181,7 +1193,8 @@ weston_wm_window_create(struct weston_wm *wm,
 
 	geometry_cookie = xcb_get_geometry(wm->conn, id);
 
-	values[0] = XCB_EVENT_MASK_PROPERTY_CHANGE;
+	values[0] = XCB_EVENT_MASK_PROPERTY_CHANGE |
+                    XCB_EVENT_MASK_FOCUS_CHANGE;
 	xcb_change_window_attributes(wm->conn, id, XCB_CW_EVENT_MASK, values);
 
 	window->wm = wm;
@@ -1196,7 +1209,7 @@ weston_wm_window_create(struct weston_wm *wm,
 	geometry_reply = xcb_get_geometry_reply(wm->conn, geometry_cookie, NULL);
 	/* technically we should use XRender and check the visual format's
 	alpha_mask, but checking depth is simpler and works in all known cases */
-	if(geometry_reply != NULL)
+	if (geometry_reply != NULL)
 		window->has_alpha = geometry_reply->depth == 32;
 	free(geometry_reply);
 
@@ -1312,12 +1325,16 @@ weston_wm_pick_seat_for_window(struct weston_wm_window *window)
 
 	seat = NULL;
 	wl_list_for_each(s, &wm->server->compositor->seat_list, link) {
-		if (s->pointer != NULL && s->pointer->focus &&
-		    s->pointer->focus->surface == window->surface &&
-		    s->pointer->button_count > 0 &&
-		    (seat == NULL ||
-		     s->pointer->grab_serial -
-		     seat->pointer->grab_serial < (1 << 30)))
+		struct weston_pointer *pointer = weston_seat_get_pointer(s);
+		struct weston_pointer *old_pointer =
+			weston_seat_get_pointer(seat);
+
+		if (pointer && pointer->focus &&
+		    pointer->focus->surface == window->surface &&
+		    pointer->button_count > 0 &&
+		    (!seat ||
+		     pointer->grab_serial -
+		     old_pointer->grab_serial < (1 << 30)))
 			seat = s;
 	}
 
@@ -1341,19 +1358,20 @@ weston_wm_window_handle_moveresize(struct weston_wm_window *window,
 
 	struct weston_wm *wm = window->wm;
 	struct weston_seat *seat = weston_wm_pick_seat_for_window(window);
+	struct weston_pointer *pointer = weston_seat_get_pointer(seat);
 	int detail;
 	struct weston_shell_interface *shell_interface =
 		&wm->server->compositor->shell_interface;
 
-	if (seat == NULL || seat->pointer->button_count != 1
-	    || !seat->pointer->focus
-	    || seat->pointer->focus->surface != window->surface)
+	if (!pointer || pointer->button_count != 1
+	    || !pointer->focus
+	    || pointer->focus->surface != window->surface)
 		return;
 
 	detail = client_message->data.data32[2];
 	switch (detail) {
 	case _NET_WM_MOVERESIZE_MOVE:
-		shell_interface->move(window->shsurf, seat);
+		shell_interface->move(window->shsurf, pointer);
 		break;
 	case _NET_WM_MOVERESIZE_SIZE_TOPLEFT:
 	case _NET_WM_MOVERESIZE_SIZE_TOP:
@@ -1363,7 +1381,7 @@ weston_wm_window_handle_moveresize(struct weston_wm_window *window,
 	case _NET_WM_MOVERESIZE_SIZE_BOTTOM:
 	case _NET_WM_MOVERESIZE_SIZE_BOTTOMLEFT:
 	case _NET_WM_MOVERESIZE_SIZE_LEFT:
-		shell_interface->resize(window->shsurf, seat, map[detail]);
+		shell_interface->resize(window->shsurf, pointer, map[detail]);
 		break;
 	case _NET_WM_MOVERESIZE_CANCEL:
 		break;
@@ -1749,6 +1767,7 @@ weston_wm_handle_button(struct weston_wm *wm, xcb_generic_event_t *event)
 	struct weston_shell_interface *shell_interface =
 		&wm->server->compositor->shell_interface;
 	struct weston_seat *seat;
+	struct weston_pointer *pointer;
 	struct weston_wm_window *window;
 	enum theme_location location;
 	enum frame_button_state button_state;
@@ -1766,6 +1785,7 @@ weston_wm_handle_button(struct weston_wm *wm, xcb_generic_event_t *event)
 		return;
 
 	seat = weston_wm_pick_seat_for_window(window);
+	pointer = weston_seat_get_pointer(seat);
 
 	button_state = button->response_type == XCB_BUTTON_PRESS ?
 		FRAME_BUTTON_PRESSED : FRAME_BUTTON_RELEASED;
@@ -1784,14 +1804,14 @@ weston_wm_handle_button(struct weston_wm *wm, xcb_generic_event_t *event)
 		weston_wm_window_schedule_repaint(window);
 
 	if (frame_status(window->frame) & FRAME_STATUS_MOVE) {
-		if (seat != NULL)
-			shell_interface->move(window->shsurf, seat);
+		if (pointer)
+			shell_interface->move(window->shsurf, pointer);
 		frame_status_clear(window->frame, FRAME_STATUS_MOVE);
 	}
 
 	if (frame_status(window->frame) & FRAME_STATUS_RESIZE) {
-		if (seat != NULL)
-			shell_interface->resize(window->shsurf, seat, location);
+		if (pointer)
+			shell_interface->resize(window->shsurf, pointer, location);
 		frame_status_clear(window->frame, FRAME_STATUS_RESIZE);
 	}
 
@@ -1873,6 +1893,16 @@ weston_wm_handle_leave(struct weston_wm *wm, xcb_generic_event_t *event)
 	weston_wm_window_set_cursor(wm, window->frame_id, XWM_CURSOR_LEFT_PTR);
 }
 
+static void
+weston_wm_handle_focus_in(struct weston_wm *wm, xcb_generic_event_t *event)
+{
+	xcb_focus_in_event_t *focus = (xcb_focus_in_event_t *) event;
+	/* Do not let X clients change the focus behind the compositor's
+	 * back. Reset the focus to the old one if it changed. */
+	if (!wm->focus_window || focus->event != wm->focus_window->id)
+		weston_wm_send_focus_window(wm, wm->focus_window);
+}
+
 static int
 weston_wm_handle_event(int fd, uint32_t mask, void *data)
 {
@@ -1939,6 +1969,9 @@ weston_wm_handle_event(int fd, uint32_t mask, void *data)
 			break;
 		case XCB_CLIENT_MESSAGE:
 			weston_wm_handle_client_message(wm, event);
+			break;
+		case XCB_FOCUS_IN:
+			weston_wm_handle_focus_in(wm, event);
 			break;
 		}
 
@@ -2476,7 +2509,7 @@ xserver_map_shell_surface(struct weston_wm_window *window,
 		return;
 	}
 
-	window->shsurf = 
+	window->shsurf =
 		shell_interface->create_shell_surface(shell_interface->shell,
 						      window->surface,
 						      &shell_client);

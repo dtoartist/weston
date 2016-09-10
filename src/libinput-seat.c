@@ -2,23 +2,26 @@
  * Copyright © 2013 Intel Corporation
  * Copyright © 2013 Jonas Ådahl
  *
- * Permission to use, copy, modify, distribute, and sell this software and
- * its documentation for any purpose is hereby granted without fee, provided
- * that the above copyright notice appear in all copies and that both that
- * copyright notice and this permission notice appear in supporting
- * documentation, and that the name of the copyright holders not be used in
- * advertising or publicity pertaining to distribution of the software
- * without specific, written prior permission.  The copyright holders make
- * no representations about the suitability of this software for any
- * purpose.  It is provided "as is" without express or implied warranty.
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files (the
+ * "Software"), to deal in the Software without restriction, including
+ * without limitation the rights to use, copy, modify, merge, publish,
+ * distribute, sublicense, and/or sell copies of the Software, and to
+ * permit persons to whom the Software is furnished to do so, subject to
+ * the following conditions:
  *
- * THE COPYRIGHT HOLDERS DISCLAIM ALL WARRANTIES WITH REGARD TO THIS
- * SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
- * FITNESS, IN NO EVENT SHALL THE COPYRIGHT HOLDERS BE LIABLE FOR ANY
- * SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER
- * RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF
- * CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
- * CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ * The above copyright notice and this permission notice (including the
+ * next paragraph) shall be included in all copies or substantial
+ * portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT.  IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+ * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 
 #include "config.h"
@@ -34,6 +37,7 @@
 #include "launcher-util.h"
 #include "libinput-seat.h"
 #include "libinput-device.h"
+#include "shared/helpers.h"
 
 static const char default_seat[] = "seat0";
 static const char default_seat_name[] = "default";
@@ -56,6 +60,7 @@ device_added(struct udev_input *input, struct libinput_device *libinput_device)
 	struct libinput_seat *libinput_seat;
 	struct weston_seat *seat;
 	struct udev_seat *udev_seat;
+	struct weston_pointer *pointer;
 
 	c = input->compositor;
 	libinput_seat = libinput_device_get_seat(libinput_device);
@@ -73,10 +78,11 @@ device_added(struct udev_input *input, struct libinput_device *libinput_device)
 	udev_seat = (struct udev_seat *) seat;
 	wl_list_insert(udev_seat->devices_list.prev, &device->link);
 
-	if (seat->output && seat->pointer)
-		weston_pointer_clamp(seat->pointer,
-				     &seat->pointer->x,
-				     &seat->pointer->y);
+	pointer = weston_seat_get_pointer(seat);
+	if (seat->output && pointer)
+		weston_pointer_clamp(pointer,
+				     &pointer->x,
+				     &pointer->y);
 
 	output_name = libinput_device_get_output_name(libinput_device);
 	if (output_name) {
@@ -93,6 +99,14 @@ device_added(struct udev_input *input, struct libinput_device *libinput_device)
 
 	if (!input->suspended)
 		weston_seat_repick(seat);
+}
+
+static void
+device_removed(struct udev_input *input, struct libinput_device *libinput_device)
+{
+	struct evdev_device *device;
+	device = libinput_device_get_user_data(libinput_device);
+	evdev_device_destroy(device);
 }
 
 static void
@@ -123,7 +137,6 @@ udev_input_process_event(struct libinput_event *event)
 	struct libinput_device *libinput_device =
 		libinput_event_get_device(event);
 	struct udev_input *input = libinput_get_user_data(libinput);
-	struct evdev_device *device;
 	int handled = 1;
 
 	switch (libinput_event_get_type(event)) {
@@ -131,8 +144,7 @@ udev_input_process_event(struct libinput_event *event)
 		device_added(input, libinput_device);
 		break;
 	case LIBINPUT_EVENT_DEVICE_REMOVED:
-		device = libinput_device_get_user_data(libinput_device);
-		evdev_device_destroy(device);
+		device_removed(input, libinput_device);
 		break;
 	default:
 		handled = 0;
@@ -368,9 +380,13 @@ udev_seat_create(struct udev_input *input, const char *seat_name)
 static void
 udev_seat_destroy(struct udev_seat *seat)
 {
-	udev_seat_remove_devices(seat);
-	if (seat->base.keyboard)
+	struct weston_keyboard *keyboard =
+		weston_seat_get_keyboard(&seat->base);
+
+	if (keyboard)
 		notify_keyboard_focus_out(&seat->base);
+
+	udev_seat_remove_devices(seat);
 	weston_seat_release(&seat->base);
 	wl_list_remove(&seat->output_create_listener.link);
 	free(seat);

@@ -2,23 +2,24 @@
  * Copyright © 2008 Kristian Høgsberg
  * Copyright © 2012-2013 Collabora, Ltd.
  *
- * Permission to use, copy, modify, distribute, and sell this software and its
- * documentation for any purpose is hereby granted without fee, provided that
- * the above copyright notice appear in all copies and that both that copyright
- * notice and this permission notice appear in supporting documentation, and
- * that the name of the copyright holders not be used in advertising or
- * publicity pertaining to distribution of the software without specific,
- * written prior permission.  The copyright holders make no representations
- * about the suitability of this software for any purpose.  It is provided "as
- * is" without express or implied warranty.
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
  *
- * THE COPYRIGHT HOLDERS DISCLAIM ALL WARRANTIES WITH REGARD TO THIS SOFTWARE,
- * INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS, IN NO
- * EVENT SHALL THE COPYRIGHT HOLDERS BE LIABLE FOR ANY SPECIAL, INDIRECT OR
- * CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE,
- * DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
- * TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE
- * OF THIS SOFTWARE.
+ * The above copyright notice and this permission notice (including the next
+ * paragraph) shall be included in all copies or substantial portions of the
+ * Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+ * DEALINGS IN THE SOFTWARE.
  */
 
 #include "config.h"
@@ -65,11 +66,12 @@ typedef void *EGLContext;
 
 #include <linux/input.h>
 #include <wayland-client.h>
-#include "../shared/cairo-util.h"
+#include "shared/cairo-util.h"
+#include "shared/helpers.h"
 #include "xdg-shell-client-protocol.h"
 #include "text-cursor-position-client-protocol.h"
 #include "workspaces-client-protocol.h"
-#include "../shared/os-compatibility.h"
+#include "shared/os-compatibility.h"
 
 #include "window.h"
 
@@ -317,6 +319,11 @@ struct input {
 	int current_cursor;
 	uint32_t cursor_anim_start;
 	struct wl_callback *cursor_frame_cb;
+	uint32_t cursor_timer_start;
+	uint32_t cursor_anim_current;
+	int cursor_delay_fd;
+	bool cursor_timer_running;
+	struct task cursor_task;
 	struct wl_surface *pointer_surface;
 	uint32_t modifiers;
 	uint32_t pointer_enter_serial;
@@ -1160,12 +1167,7 @@ shm_surface_create(struct display *display, struct wl_surface *wl_surface,
 	struct shm_surface *surface;
 	DBG_OBJ(wl_surface, "\n");
 
-	surface = xmalloc(sizeof *surface);
-	memset(surface, 0, sizeof *surface);
-
-	if (!surface)
-		return NULL;
-
+	surface = xzalloc(sizeof *surface);
 	surface->base.prepare = shm_surface_prepare;
 	surface->base.swap = shm_surface_swap;
 	surface->base.acquire = shm_surface_acquire;
@@ -2644,6 +2646,30 @@ input_ungrab(struct input *input)
 }
 
 static void
+cursor_delay_timer_reset(struct input *input, uint32_t duration)
+{
+	struct itimerspec its;
+
+	if (!duration)
+		input->cursor_timer_running = false;
+	else
+		input->cursor_timer_running = true;
+
+	its.it_interval.tv_sec = 0;
+	its.it_interval.tv_nsec = 0;
+	its.it_value.tv_sec = duration / 1000;
+	its.it_value.tv_nsec = (duration % 1000) * 1000 * 1000;
+	if (timerfd_settime(input->cursor_delay_fd, 0, &its, NULL) < 0)
+		fprintf(stderr, "could not set cursor timerfd\n: %m");
+}
+
+static void cancel_pointer_image_update(struct input *input)
+{
+	if (input->cursor_timer_running)
+		cursor_delay_timer_reset(input, 0);
+}
+
+static void
 input_remove_pointer_focus(struct input *input)
 {
 	struct window *window = input->pointer_focus;
@@ -2655,6 +2681,7 @@ input_remove_pointer_focus(struct input *input)
 
 	input->pointer_focus = NULL;
 	input->current_cursor = CURSOR_UNSET;
+	cancel_pointer_image_update(input);
 }
 
 static void
@@ -3544,17 +3571,59 @@ input_set_pointer_special(struct input *input)
 }
 
 static void
+schedule_pointer_image_update(struct input *input,
+			      struct wl_cursor *cursor,
+			      uint32_t duration,
+			      bool force_frame)
+{
+	/* Some silly cursor sets have enormous pauses in them.  In these
+	 * cases it's better to use a timer even if it results in less
+	 * accurate presentation, since it will save us having to set the
+	 * same cursor image over and over again.
+	 *
+	 * This is really not the way we're supposed to time any kind of
+	 * animation, but we're pretending it's OK here because we don't
+	 * want animated cursors with long delays to needlessly hog CPU.
+	 *
+	 * We use force_frame to ensure we don't accumulate large timing
+	 * errors by running off the wrong clock.
+	 */
+	if (!force_frame && duration > 100) {
+		struct timespec tp;
+
+		clock_gettime(CLOCK_MONOTONIC, &tp);
+		input->cursor_timer_start = tp.tv_sec * 1000
+					  + tp.tv_nsec / 1000000;
+		cursor_delay_timer_reset(input, duration);
+		return;
+	}
+
+	/* for short durations we'll just spin on frame callbacks for
+	 * accurate timing - the way any kind of timing sensitive animation
+	 * should really be done. */
+	input->cursor_frame_cb = wl_surface_frame(input->pointer_surface);
+	wl_callback_add_listener(input->cursor_frame_cb,
+				 &pointer_surface_listener, input);
+
+}
+
+static void
 pointer_surface_frame_callback(void *data, struct wl_callback *callback,
 			       uint32_t time)
 {
 	struct input *input = data;
 	struct wl_cursor *cursor;
 	int i;
+	uint32_t duration;
+	bool force_frame = true;
+
+	cancel_pointer_image_update(input);
 
 	if (callback) {
 		assert(callback == input->cursor_frame_cb);
 		wl_callback_destroy(callback);
 		input->cursor_frame_cb = NULL;
+		force_frame = false;
 	}
 
 	if (!input->pointer)
@@ -3574,19 +3643,46 @@ pointer_surface_frame_callback(void *data, struct wl_callback *callback,
 	else if (input->cursor_anim_start == 0)
 		input->cursor_anim_start = time;
 
-	if (time == 0 || input->cursor_anim_start == 0)
-		i = 0;
-	else
-		i = wl_cursor_frame(cursor, time - input->cursor_anim_start);
+	input->cursor_anim_current = time;
 
-	if (cursor->image_count > 1) {
-		input->cursor_frame_cb =
-			wl_surface_frame(input->pointer_surface);
-		wl_callback_add_listener(input->cursor_frame_cb,
-					 &pointer_surface_listener, input);
-	}
+	if (time == 0 || input->cursor_anim_start == 0) {
+		duration = 0;
+		i = 0;
+	} else
+		i = wl_cursor_frame_and_duration(
+					cursor,
+					time - input->cursor_anim_start,
+					&duration);
+
+	if (cursor->image_count > 1)
+		schedule_pointer_image_update(input, cursor, duration,
+					      force_frame);
 
 	input_set_pointer_image_index(input, i);
+}
+
+static void
+cursor_timer_func(struct task *task, uint32_t events)
+{
+	struct input *input = container_of(task, struct input, cursor_task);
+	struct timespec tp;
+	struct wl_cursor *cursor;
+	uint32_t time;
+	uint64_t exp;
+
+	if (!input->cursor_timer_running)
+		return;
+
+	if (read(input->cursor_delay_fd, &exp, sizeof (uint64_t)) != sizeof (uint64_t))
+		return;
+
+	cursor = input->display->cursors[input->current_cursor];
+	if (!cursor)
+		return;
+
+	clock_gettime(CLOCK_MONOTONIC, &tp);
+	time = tp.tv_sec * 1000 + tp.tv_nsec / 1000000 - input->cursor_timer_start;
+	pointer_surface_frame_callback(input, NULL, input->cursor_anim_current + time);
 }
 
 static const struct wl_callback_listener pointer_surface_listener = {
@@ -3815,36 +3911,6 @@ surface_resize(struct surface *surface)
 }
 
 static void
-hack_prevent_EGL_sub_surface_deadlock(struct window *window)
-{
-	/*
-	 * This hack should be removed, when EGL respects
-	 * eglSwapInterval(0).
-	 *
-	 * If this window has sub-surfaces, especially a free-running
-	 * EGL-widget, we need to post the parent surface once with
-	 * all the old state to guarantee, that the EGL-widget will
-	 * receive its frame callback soon. Otherwise, a forced call
-	 * to eglSwapBuffers may end up blocking, waiting for a frame
-	 * event that will never come, because we will commit the parent
-	 * surface with all new state only after eglSwapBuffers returns.
-	 *
-	 * This assumes, that:
-	 * 1. When the EGL widget's resize hook is called, it pauses.
-	 * 2. When the EGL widget's redraw hook is called, it forces a
-	 *    repaint and a call to eglSwapBuffers(), and maybe resumes.
-	 * In a single threaded application condition 1 is a no-op.
-	 *
-	 * XXX: This should actually be after the surface_resize() calls,
-	 * but cannot, because then it would commit the incomplete state
-	 * accumulated from the widget resize hooks.
-	 */
-	if (window->subsurface_list.next != &window->main_surface->link ||
-	    window->subsurface_list.prev != &window->main_surface->link)
-		wl_surface_commit(window->main_surface->surface);
-}
-
-static void
 window_do_resize(struct window *window)
 {
 	struct surface *surface;
@@ -3885,8 +3951,6 @@ idle_resize(struct window *window)
 	    window->main_surface->server_allocation.height,
 	    window->pending_allocation.width,
 	    window->pending_allocation.height);
-
-	hack_prevent_EGL_sub_surface_deadlock(window);
 
 	window_do_resize(window);
 }
@@ -4509,11 +4573,7 @@ surface_create(struct window *window)
 	struct display *display = window->display;
 	struct surface *surface;
 
-	surface = xmalloc(sizeof *surface);
-	memset(surface, 0, sizeof *surface);
-	if (!surface)
-		return NULL;
-
+	surface = xzalloc(sizeof *surface);
 	surface->window = window;
 	surface->surface = wl_compositor_create_surface(display->compositor);
 	surface->buffer_scale = 1;
@@ -5148,8 +5208,6 @@ fini_xkb(struct input *input)
 	xkb_keymap_unref(input->xkb.keymap);
 }
 
-#define MIN(a,b) ((a) < (b) ? a : b)
-
 static void
 display_add_input(struct display *d, uint32_t id)
 {
@@ -5178,7 +5236,12 @@ display_add_input(struct display *d, uint32_t id)
 	}
 
 	input->pointer_surface = wl_compositor_create_surface(d->compositor);
+	input->cursor_task.run = cursor_timer_func;
 
+	input->cursor_delay_fd = timerfd_create(CLOCK_MONOTONIC,
+						TFD_CLOEXEC | TFD_NONBLOCK);
+	display_watch_fd(d, input->cursor_delay_fd, EPOLLIN,
+			 &input->cursor_task);
 	set_repeat_info(input, 40, 400);
 
 	input->repeat_timer_fd = timerfd_create(CLOCK_MONOTONIC,
@@ -5201,7 +5264,7 @@ input_destroy(struct input *input)
 		data_offer_destroy(input->selection_offer);
 
 	if (input->data_device) {
-		if(input->display->data_device_manager_version >= 2)
+		if (input->display->data_device_manager_version >= 2)
 			wl_data_device_release(input->data_device);
 		else
 			wl_data_device_destroy(input->data_device);
@@ -5220,6 +5283,7 @@ input_destroy(struct input *input)
 	wl_list_remove(&input->link);
 	wl_seat_destroy(input->seat);
 	close(input->repeat_timer_fd);
+	close(input->cursor_delay_fd);
 	free(input);
 }
 

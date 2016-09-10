@@ -1,31 +1,37 @@
 /*
  * Copyright © 2012 Scott Moreau
  *
- * Permission to use, copy, modify, distribute, and sell this software and
- * its documentation for any purpose is hereby granted without fee, provided
- * that the above copyright notice appear in all copies and that both that
- * copyright notice and this permission notice appear in supporting
- * documentation, and that the name of the copyright holders not be used in
- * advertising or publicity pertaining to distribution of the software
- * without specific, written prior permission.  The copyright holders make
- * no representations about the suitability of this software for any
- * purpose.  It is provided "as is" without express or implied warranty.
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files (the
+ * "Software"), to deal in the Software without restriction, including
+ * without limitation the rights to use, copy, modify, merge, publish,
+ * distribute, sublicense, and/or sell copies of the Software, and to
+ * permit persons to whom the Software is furnished to do so, subject to
+ * the following conditions:
  *
- * THE COPYRIGHT HOLDERS DISCLAIM ALL WARRANTIES WITH REGARD TO THIS
- * SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
- * FITNESS, IN NO EVENT SHALL THE COPYRIGHT HOLDERS BE LIABLE FOR ANY
- * SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER
- * RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF
- * CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
- * CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ * The above copyright notice and this permission notice (including the
+ * next paragraph) shall be included in all copies or substantial
+ * portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT.  IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+ * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 
 #include "config.h"
 
+#include <assert.h>
 #include <stdlib.h>
+#include <stdbool.h>
 
 #include "compositor.h"
 #include "text-cursor-position-server-protocol.h"
+#include "shared/helpers.h"
 
 static void
 weston_zoom_frame_z(struct weston_animation *animation,
@@ -43,7 +49,8 @@ weston_zoom_frame_z(struct weston_animation *animation,
 
 	if (weston_spring_done(&output->zoom.spring_z)) {
 		if (output->zoom.active && output->zoom.level <= 0.0) {
-			output->zoom.active = 0;
+			output->zoom.active = false;
+			output->zoom.seat = NULL;
 			output->disable_planes--;
 			wl_list_remove(&output->zoom.motion_listener.link);
 		}
@@ -56,16 +63,9 @@ weston_zoom_frame_z(struct weston_animation *animation,
 	weston_output_damage(output);
 }
 
-static struct weston_seat *
-weston_zoom_pick_seat(struct weston_compositor *compositor)
-{
-	return container_of(compositor->seat_list.next,
-			    struct weston_seat, link);
-}
-
 static void
-zoom_area_center_from_pointer(struct weston_output *output,
-				wl_fixed_t *x, wl_fixed_t *y)
+zoom_area_center_from_point(struct weston_output *output,
+			    wl_fixed_t *x, wl_fixed_t *y)
 {
 	float level = output->zoom.spring_z.current;
 	wl_fixed_t offset_x = wl_fixed_from_int(output->x);
@@ -91,7 +91,7 @@ weston_output_update_zoom_transform(struct weston_output *output)
 	    level == 0.0f)
 		return;
 
-	zoom_area_center_from_pointer(output, &x, &y);
+	zoom_area_center_from_point(output, &x, &y);
 
 	global_x = wl_fixed_to_double(x);
 	global_y = wl_fixed_to_double(y);
@@ -128,10 +128,13 @@ weston_zoom_transition(struct weston_output *output)
 WL_EXPORT void
 weston_output_update_zoom(struct weston_output *output)
 {
-	struct weston_seat *seat = weston_zoom_pick_seat(output->compositor);
+	struct weston_seat *seat = output->zoom.seat;
+	struct weston_pointer *pointer = weston_seat_get_pointer(seat);
 
-	output->zoom.current.x = seat->pointer->x;
-	output->zoom.current.y = seat->pointer->y;
+	assert(output->zoom.active);
+
+	output->zoom.current.x = pointer->x;
+	output->zoom.current.y = pointer->y;
 
 	weston_zoom_transition(output);
 	weston_output_update_zoom_transform(output);
@@ -149,23 +152,26 @@ motion(struct wl_listener *listener, void *data)
 }
 
 WL_EXPORT void
-weston_output_activate_zoom(struct weston_output *output)
+weston_output_activate_zoom(struct weston_output *output,
+			    struct weston_seat *seat)
 {
-	struct weston_seat *seat = weston_zoom_pick_seat(output->compositor);
+	struct weston_pointer *pointer = weston_seat_get_pointer(seat);
 
 	if (output->zoom.active)
 		return;
 
-	output->zoom.active = 1;
+	output->zoom.active = true;
+	output->zoom.seat = seat;
 	output->disable_planes++;
-	wl_signal_add(&seat->pointer->motion_signal,
+	wl_signal_add(&pointer->motion_signal,
 		      &output->zoom.motion_listener);
 }
 
 WL_EXPORT void
 weston_output_init_zoom(struct weston_output *output)
 {
-	output->zoom.active = 0;
+	output->zoom.active = false;
+	output->zoom.seat = NULL;
 	output->zoom.increment = 0.07;
 	output->zoom.max_level = 0.95;
 	output->zoom.level = 0.0;

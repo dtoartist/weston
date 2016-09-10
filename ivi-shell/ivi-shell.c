@@ -1,23 +1,26 @@
 /*
  * Copyright (C) 2013 DENSO CORPORATION
  *
- * Permission to use, copy, modify, distribute, and sell this software and
- * its documentation for any purpose is hereby granted without fee, provided
- * that the above copyright notice appear in all copies and that both that
- * copyright notice and this permission notice appear in supporting
- * documentation, and that the name of the copyright holders not be used in
- * advertising or publicity pertaining to distribution of the software
- * without specific, written prior permission.  The copyright holders make
- * no representations about the suitability of this software for any
- * purpose.  It is provided "as is" without express or implied warranty.
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files (the
+ * "Software"), to deal in the Software without restriction, including
+ * without limitation the rights to use, copy, modify, merge, publish,
+ * distribute, sublicense, and/or sell copies of the Software, and to
+ * permit persons to whom the Software is furnished to do so, subject to
+ * the following conditions:
  *
- * THE COPYRIGHT HOLDERS DISCLAIM ALL WARRANTIES WITH REGARD TO THIS
- * SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
- * FITNESS, IN NO EVENT SHALL THE COPYRIGHT HOLDERS BE LIABLE FOR ANY
- * SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER
- * RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF
- * CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
- * CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ * The above copyright notice and this permission notice (including the
+ * next paragraph) shall be included in all copies or substantial
+ * portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT.  IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+ * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 
 /*
@@ -42,6 +45,7 @@
 #include "ivi-application-server-protocol.h"
 #include "ivi-layout-export.h"
 #include "ivi-layout-private.h"
+#include "shared/helpers.h"
 
 /* Representation of ivi_surface protocol object. */
 struct ivi_shell_surface
@@ -126,6 +130,22 @@ ivi_shell_surface_configure(struct weston_surface *surface,
 	}
 }
 
+static void
+layout_surface_cleanup(struct ivi_shell_surface *ivisurf)
+{
+	assert(ivisurf->layout_surface != NULL);
+
+	ivi_layout_surface_destroy(ivisurf->layout_surface);
+	ivisurf->layout_surface = NULL;
+
+	ivisurf->surface->configure = NULL;
+	ivisurf->surface->configure_private = NULL;
+	ivisurf->surface = NULL;
+
+	// destroy weston_surface destroy signal.
+	wl_list_remove(&ivisurf->surface_destroy_listener.link);
+}
+
 /*
  * The ivi_surface wl_resource destructor.
  *
@@ -135,9 +155,18 @@ static void
 shell_destroy_shell_surface(struct wl_resource *resource)
 {
 	struct ivi_shell_surface *ivisurf = wl_resource_get_user_data(resource);
-	if (ivisurf != NULL) {
-		ivisurf->resource = NULL;
-	}
+
+	if (ivisurf == NULL)
+		return;
+
+	assert(ivisurf->resource == resource);
+
+	if (ivisurf->layout_surface != NULL)
+		layout_surface_cleanup(ivisurf);
+
+	wl_list_remove(&ivisurf->link);
+
+	free(ivisurf);
 }
 
 /* Gets called through the weston_surface destroy signal. */
@@ -150,21 +179,8 @@ shell_handle_surface_destroy(struct wl_listener *listener, void *data)
 
 	assert(ivisurf != NULL);
 
-	if (ivisurf->surface!=NULL) {
-		ivisurf->surface->configure = NULL;
-		ivisurf->surface->configure_private = NULL;
-		ivisurf->surface = NULL;
-	}
-
-	wl_list_remove(&ivisurf->surface_destroy_listener.link);
-	wl_list_remove(&ivisurf->link);
-
-	if (ivisurf->resource != NULL) {
-		wl_resource_set_user_data(ivisurf->resource, NULL);
-		ivisurf->resource = NULL;
-	}
-	free(ivisurf);
-
+	if (ivisurf->layout_surface != NULL)
+		layout_surface_cleanup(ivisurf);
 }
 
 /* Gets called, when a client sends ivi_surface.destroy request. */
@@ -219,7 +235,7 @@ application_surface_create(struct wl_client *client,
 	layout_surface = ivi_layout_surface_create(weston_surface, id_surface);
 
 	/* check if id_ivi is already used for wl_surface*/
-	if (layout_surface == NULL){
+	if (layout_surface == NULL) {
 		wl_resource_post_error(resource,
 				       IVI_APPLICATION_ERROR_IVI_ID,
 				       "surface_id is already assigned "
@@ -327,6 +343,7 @@ shell_destroy(struct wl_listener *listener, void *data)
 		container_of(listener, struct ivi_shell, destroy_listener);
 	struct ivi_shell_surface *ivisurf, *next;
 
+	text_backend_destroy(shell->text_backend);
 	input_panel_destroy(shell);
 
 	wl_list_for_each_safe(ivisurf, next, &shell->ivi_surface_list, link) {
@@ -338,8 +355,8 @@ shell_destroy(struct wl_listener *listener, void *data)
 }
 
 static void
-terminate_binding(struct weston_seat *seat, uint32_t time, uint32_t key,
-		  void *data)
+terminate_binding(struct weston_keyboard *keyboard, uint32_t time,
+		  uint32_t key, void *data)
 {
 	struct weston_compositor *compositor = data;
 
@@ -421,6 +438,10 @@ module_init(struct weston_compositor *compositor,
 	wl_signal_add(&compositor->destroy_signal, &shell->destroy_listener);
 
 	if (input_panel_setup(shell) < 0)
+		goto out_settings;
+
+	shell->text_backend = text_backend_init(compositor);
+	if (!shell->text_backend)
 		goto out_settings;
 
 	if (wl_global_create(compositor->wl_display,

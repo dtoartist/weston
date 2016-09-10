@@ -1,23 +1,26 @@
 /*
  * Copyright © 2011-2012 Intel Corporation
  *
- * Permission to use, copy, modify, distribute, and sell this software and
- * its documentation for any purpose is hereby granted without fee, provided
- * that the above copyright notice appear in all copies and that both that
- * copyright notice and this permission notice appear in supporting
- * documentation, and that the name of the copyright holders not be used in
- * advertising or publicity pertaining to distribution of the software
- * without specific, written prior permission.  The copyright holders make
- * no representations about the suitability of this software for any
- * purpose.  It is provided "as is" without express or implied warranty.
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files (the
+ * "Software"), to deal in the Software without restriction, including
+ * without limitation the rights to use, copy, modify, merge, publish,
+ * distribute, sublicense, and/or sell copies of the Software, and to
+ * permit persons to whom the Software is furnished to do so, subject to
+ * the following conditions:
  *
- * THE COPYRIGHT HOLDERS DISCLAIM ALL WARRANTIES WITH REGARD TO THIS
- * SOFTWARE, INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
- * FITNESS, IN NO EVENT SHALL THE COPYRIGHT HOLDERS BE LIABLE FOR ANY
- * SPECIAL, INDIRECT OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER
- * RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF
- * CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN
- * CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ * The above copyright notice and this permission notice (including the
+ * next paragraph) shall be included in all copies or substantial
+ * portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT.  IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+ * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 
 #include "config.h"
@@ -26,6 +29,7 @@
 #include <linux/input.h>
 
 #include "compositor.h"
+#include "shared/helpers.h"
 
 struct weston_binding {
 	uint32_t key;
@@ -171,7 +175,7 @@ weston_binding_destroy(struct weston_binding *binding)
 	free(binding);
 }
 
-WL_EXPORT void
+void
 weston_binding_list_destroy_all(struct wl_list *list)
 {
 	struct weston_binding *binding, *tmp;
@@ -250,15 +254,15 @@ static const struct weston_keyboard_grab_interface binding_grab = {
 };
 
 static void
-install_binding_grab(struct weston_seat *seat, uint32_t time, uint32_t key,
-                     struct weston_surface *focus)
+install_binding_grab(struct weston_keyboard *keyboard, uint32_t time,
+		     uint32_t key, struct weston_surface *focus)
 {
 	struct binding_keyboard_grab *grab;
 
 	grab = malloc(sizeof *grab);
 	grab->key = key;
 	grab->grab.interface = &binding_grab;
-	weston_keyboard_start_grab(seat->keyboard, &grab->grab);
+	weston_keyboard_start_grab(keyboard, &grab->grab);
 
 	/* Notify the surface which had the focus before this binding
 	 * triggered that we stole a keypress from under it, by forcing
@@ -268,20 +272,21 @@ install_binding_grab(struct weston_seat *seat, uint32_t time, uint32_t key,
 	 * If the old focus surface is different than the new one it
 	 * means it was changed in the binding handler, so it received
 	 * the enter event already. */
-	if (focus && seat->keyboard->focus == focus) {
-		weston_keyboard_set_focus(seat->keyboard, NULL);
-		weston_keyboard_set_focus(seat->keyboard, focus);
+	if (focus && keyboard->focus == focus) {
+		weston_keyboard_set_focus(keyboard, NULL);
+		weston_keyboard_set_focus(keyboard, focus);
 	}
 }
 
-WL_EXPORT void
+void
 weston_compositor_run_key_binding(struct weston_compositor *compositor,
-				  struct weston_seat *seat,
+				  struct weston_keyboard *keyboard,
 				  uint32_t time, uint32_t key,
 				  enum wl_keyboard_key_state state)
 {
 	struct weston_binding *b, *tmp;
 	struct weston_surface *focus;
+	struct weston_seat *seat = keyboard->seat;
 
 	if (state == WL_KEYBOARD_KEY_STATE_RELEASED)
 		return;
@@ -293,28 +298,31 @@ weston_compositor_run_key_binding(struct weston_compositor *compositor,
 	wl_list_for_each_safe(b, tmp, &compositor->key_binding_list, link) {
 		if (b->key == key && b->modifier == seat->modifier_state) {
 			weston_key_binding_handler_t handler = b->handler;
-			focus = seat->keyboard->focus;
-			handler(seat, time, key, b->data);
+			focus = keyboard->focus;
+			handler(keyboard, time, key, b->data);
 
 			/* If this was a key binding and it didn't
 			 * install a keyboard grab, install one now to
 			 * swallow the key press. */
-			if (seat->keyboard->grab ==
-			    &seat->keyboard->default_grab)
-				install_binding_grab(seat, time, key, focus);
+			if (keyboard->grab ==
+			    &keyboard->default_grab)
+				install_binding_grab(keyboard,
+						     time,
+						     key,
+						     focus);
 		}
 	}
 }
 
-WL_EXPORT void
+void
 weston_compositor_run_modifier_binding(struct weston_compositor *compositor,
-				       struct weston_seat *seat,
+				       struct weston_keyboard *keyboard,
 				       enum weston_keyboard_modifier modifier,
 				       enum wl_keyboard_key_state state)
 {
 	struct weston_binding *b, *tmp;
 
-	if (seat->keyboard->grab != &seat->keyboard->default_grab)
+	if (keyboard->grab != &keyboard->default_grab)
 		return;
 
 	wl_list_for_each_safe(b, tmp, &compositor->modifier_binding_list, link) {
@@ -333,13 +341,13 @@ weston_compositor_run_modifier_binding(struct weston_compositor *compositor,
 			return;
 		}
 
-		handler(seat, modifier, b->data);
+		handler(keyboard, modifier, b->data);
 	}
 }
 
-WL_EXPORT void
+void
 weston_compositor_run_button_binding(struct weston_compositor *compositor,
-				     struct weston_seat *seat,
+				     struct weston_pointer *pointer,
 				     uint32_t time, uint32_t button,
 				     enum wl_pointer_button_state state)
 {
@@ -353,34 +361,35 @@ weston_compositor_run_button_binding(struct weston_compositor *compositor,
 		b->key = button;
 
 	wl_list_for_each_safe(b, tmp, &compositor->button_binding_list, link) {
-		if (b->button == button && b->modifier == seat->modifier_state) {
+		if (b->button == button &&
+		    b->modifier == pointer->seat->modifier_state) {
 			weston_button_binding_handler_t handler = b->handler;
-			handler(seat, time, button, b->data);
+			handler(pointer, time, button, b->data);
 		}
 	}
 }
 
-WL_EXPORT void
+void
 weston_compositor_run_touch_binding(struct weston_compositor *compositor,
-				    struct weston_seat *seat, uint32_t time,
+				    struct weston_touch *touch, uint32_t time,
 				    int touch_type)
 {
 	struct weston_binding *b, *tmp;
 
-	if (seat->touch->num_tp != 1 || touch_type != WL_TOUCH_DOWN)
+	if (touch->num_tp != 1 || touch_type != WL_TOUCH_DOWN)
 		return;
 
 	wl_list_for_each_safe(b, tmp, &compositor->touch_binding_list, link) {
-		if (b->modifier == seat->modifier_state) {
+		if (b->modifier == touch->seat->modifier_state) {
 			weston_touch_binding_handler_t handler = b->handler;
-			handler(seat, time, b->data);
+			handler(touch, time, b->data);
 		}
 	}
 }
 
-WL_EXPORT int
+int
 weston_compositor_run_axis_binding(struct weston_compositor *compositor,
-				   struct weston_seat *seat,
+				   struct weston_pointer *pointer,
 				   uint32_t time, uint32_t axis,
 				   wl_fixed_t value)
 {
@@ -391,9 +400,10 @@ weston_compositor_run_axis_binding(struct weston_compositor *compositor,
 		b->key = axis;
 
 	wl_list_for_each_safe(b, tmp, &compositor->axis_binding_list, link) {
-		if (b->axis == axis && b->modifier == seat->modifier_state) {
+		if (b->axis == axis &&
+		    b->modifier == pointer->seat->modifier_state) {
 			weston_axis_binding_handler_t handler = b->handler;
-			handler(seat, time, axis, value, b->data);
+			handler(pointer, time, axis, value, b->data);
 			return 1;
 		}
 	}
@@ -401,9 +411,9 @@ weston_compositor_run_axis_binding(struct weston_compositor *compositor,
 	return 0;
 }
 
-WL_EXPORT int
+int
 weston_compositor_run_debug_binding(struct weston_compositor *compositor,
-				    struct weston_seat *seat,
+				    struct weston_keyboard *keyboard,
 				    uint32_t time, uint32_t key,
 				    enum wl_keyboard_key_state state)
 {
@@ -417,7 +427,7 @@ weston_compositor_run_debug_binding(struct weston_compositor *compositor,
 
 		count++;
 		handler = binding->handler;
-		handler(seat, time, key, binding->data);
+		handler(keyboard, time, key, binding->data);
 	}
 
 	return count;
@@ -473,8 +483,8 @@ debug_binding_key(struct weston_keyboard_grab *grab, uint32_t time,
 	}
 
 	if (check_binding) {
-		if (weston_compositor_run_debug_binding(ec, db->seat, time,
-							key, state)) {
+		if (weston_compositor_run_debug_binding(ec, grab->keyboard,
+							time, key, state)) {
 			/* We ran a binding so swallow the press and keep the
 			 * grab to swallow the released too. */
 			send = 0;
@@ -536,7 +546,8 @@ struct weston_keyboard_grab_interface debug_binding_keyboard_grab = {
 };
 
 static void
-debug_binding(struct weston_seat *seat, uint32_t time, uint32_t key, void *data)
+debug_binding(struct weston_keyboard *keyboard, uint32_t time,
+	      uint32_t key, void *data)
 {
 	struct debug_binding_grab *grab;
 
@@ -544,10 +555,10 @@ debug_binding(struct weston_seat *seat, uint32_t time, uint32_t key, void *data)
 	if (!grab)
 		return;
 
-	grab->seat = seat;
+	grab->seat = keyboard->seat;
 	grab->key[0] = key;
 	grab->grab.interface = &debug_binding_keyboard_grab;
-	weston_keyboard_start_grab(seat->keyboard, &grab->grab);
+	weston_keyboard_start_grab(keyboard, &grab->grab);
 }
 
 /** Install the trigger binding for debug bindings.
