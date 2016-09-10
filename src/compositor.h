@@ -116,6 +116,8 @@ struct weston_shell_interface {
 	void (*set_window_geometry)(struct shell_surface *shsurf,
 				    int32_t x, int32_t y,
 				    int32_t width, int32_t height);
+	void (*set_overlay_priority)(struct shell_surface *shsurf,
+                                    uint32_t ovp_order);
 	void (*set_maximized)(struct shell_surface *shsurf);
 	void (*set_pid)(struct shell_surface *shsurf, pid_t pid);
 };
@@ -240,6 +242,7 @@ struct weston_output {
 			  uint16_t *b);
 
 	struct weston_timeline_object timeline;
+	void (*set_ovp_order)(struct weston_output *output, uint32_t value);
 };
 
 struct weston_pointer_grab;
