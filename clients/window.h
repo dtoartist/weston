@@ -26,6 +26,7 @@
 
 #include "config.h"
 
+#include <stdint.h>
 #include <xkbcommon/xkbcommon.h>
 #include <wayland-client.h>
 #include <cairo.h>
@@ -50,17 +51,6 @@ struct rectangle {
 	int32_t width;
 	int32_t height;
 };
-
-void *
-fail_on_null(void *p);
-void *
-xmalloc(size_t s);
-void *
-xzalloc(size_t s);
-char *
-xstrdup(const char *s);
-void *
-xrealloc(char *p, size_t s);
 
 struct display *
 display_create(int *argc, char *argv[]);
@@ -175,6 +165,9 @@ display_run(struct display *d);
 void
 display_exit(struct display *d);
 
+int
+display_get_data_device_manager_version(struct display *d);
+
 enum cursor_type {
 	CURSOR_BOTTOM_LEFT,
 	CURSOR_BOTTOM_RIGHT,
@@ -189,6 +182,9 @@ enum cursor_type {
 	CURSOR_IBEAM,
 	CURSOR_HAND1,
 	CURSOR_WATCH,
+	CURSOR_DND_MOVE,
+	CURSOR_DND_COPY,
+	CURSOR_DND_FORBIDDEN,
 
 	CURSOR_BLANK
 };
@@ -217,6 +213,29 @@ typedef void (*window_output_handler_t)(struct window *window, struct output *ou
 					int enter, void *data);
 typedef void (*window_state_changed_handler_t)(struct window *window,
 					       void *data);
+
+
+typedef void (*window_locked_pointer_motion_handler_t)(struct window *window,
+						       struct input *input,
+						       uint32_t time,
+						       float x, float y,
+						       void *data);
+
+typedef void (*locked_pointer_locked_handler_t)(struct window *window,
+						struct input *input,
+						void *data);
+
+typedef void (*locked_pointer_unlocked_handler_t)(struct window *window,
+						  struct input *input,
+						  void *data);
+
+typedef void (*confined_pointer_confined_handler_t)(struct window *window,
+						    struct input *input,
+						    void *data);
+
+typedef void (*confined_pointer_unconfined_handler_t)(struct window *window,
+						      struct input *input,
+						      void *data);
 
 typedef void (*widget_resize_handler_t)(struct widget *widget,
 					int32_t width, int32_t height,
@@ -266,6 +285,27 @@ typedef void (*widget_axis_handler_t)(struct widget *widget,
 				      uint32_t axis,
 				      wl_fixed_t value,
 				      void *data);
+
+typedef void (*widget_pointer_frame_handler_t)(struct widget *widget,
+					       struct input *input,
+					       void *data);
+
+typedef void (*widget_axis_source_handler_t)(struct widget *widget,
+					     struct input *input,
+					     uint32_t source,
+					     void *data);
+
+typedef void (*widget_axis_stop_handler_t)(struct widget *widget,
+					   struct input *input,
+					   uint32_t time,
+					   uint32_t axis,
+					   void *data);
+
+typedef void (*widget_axis_discrete_handler_t)(struct widget *widget,
+					       struct input *input,
+					       uint32_t axis,
+					       int32_t discrete,
+					       void *data);
 
 struct window *
 window_create(struct display *display);
@@ -343,9 +383,34 @@ window_schedule_redraw(struct window *window);
 void
 window_schedule_resize(struct window *window, int width, int height);
 
+int
+window_lock_pointer(struct window *window, struct input *input);
+
 void
-window_damage(struct window *window, int32_t x, int32_t y,
-	      int32_t width, int32_t height);
+window_unlock_pointer(struct window *window);
+
+void
+widget_set_locked_pointer_cursor_hint(struct widget *widget,
+				      float x, float y);
+
+int
+window_confine_pointer_to_rectangles(struct window *window,
+				     struct input *input,
+				     struct rectangle *rectangles,
+				     int num_rectangles);
+
+void
+window_update_confine_rectangles(struct window *window,
+				 struct rectangle *rectangles,
+				 int num_rectangles);
+
+int
+window_confine_pointer_to_widget(struct window *window,
+				 struct widget *widget,
+				 struct input *input);
+
+void
+window_unconfine_pointer(struct window *window);
 
 cairo_surface_t *
 window_get_surface(struct window *window);
@@ -423,6 +488,20 @@ window_set_output_handler(struct window *window,
 void
 window_set_state_changed_handler(struct window *window,
 				 window_state_changed_handler_t handler);
+
+void
+window_set_pointer_locked_handler(struct window *window,
+				  locked_pointer_locked_handler_t locked,
+				  locked_pointer_unlocked_handler_t unlocked);
+
+void
+window_set_pointer_confined_handler(struct window *window,
+				    confined_pointer_confined_handler_t confined,
+				    confined_pointer_unconfined_handler_t unconfined);
+
+void
+window_set_locked_pointer_motion_handler(
+	struct window *window, window_locked_pointer_motion_handler_t handler);
 
 void
 window_set_title(struct window *window, const char *title);
@@ -519,6 +598,16 @@ widget_set_touch_cancel_handler(struct widget *widget,
 void
 widget_set_axis_handler(struct widget *widget,
 			widget_axis_handler_t handler);
+void
+widget_set_pointer_frame_handler(struct widget *widget,
+				 widget_pointer_frame_handler_t handler);
+void
+widget_set_axis_handlers(struct widget *widget,
+			widget_axis_handler_t axis_handler,
+			widget_axis_source_handler_t axis_source_handler,
+			widget_axis_stop_handler_t axis_stop_handler,
+			widget_axis_discrete_handler_t axis_discrete_handler);
+
 void
 widget_schedule_redraw(struct widget *widget);
 void

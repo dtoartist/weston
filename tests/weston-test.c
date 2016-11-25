@@ -25,19 +25,21 @@
 
 #include "config.h"
 
+#include <stdint.h>
 #include <stdlib.h>
 #include <assert.h>
 #include <signal.h>
 #include <unistd.h>
 #include <string.h>
 
-#include "src/compositor.h"
+#include "compositor.h"
+#include "compositor/weston.h"
 #include "weston-test-server-protocol.h"
 
 #ifdef ENABLE_EGL
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
-#include "src/weston-egl-ext.h"
+#include "weston-egl-ext.h"
 #endif /* ENABLE_EGL */
 
 #include "shared/helpers.h"
@@ -89,9 +91,9 @@ notify_pointer_position(struct weston_test *test, struct wl_resource *resource)
 }
 
 static void
-test_surface_configure(struct weston_surface *surface, int32_t sx, int32_t sy)
+test_surface_committed(struct weston_surface *surface, int32_t sx, int32_t sy)
 {
-	struct weston_test_surface *test_surface = surface->configure_private;
+	struct weston_test_surface *test_surface = surface->committed_private;
 	struct weston_test *test = test_surface->test;
 
 	if (wl_list_empty(&test_surface->view->layer_link.link))
@@ -102,6 +104,9 @@ test_surface_configure(struct weston_surface *surface, int32_t sx, int32_t sy)
 				 test_surface->x, test_surface->y);
 
 	weston_view_update_transform(test_surface->view);
+
+	test_surface->surface->is_mapped = true;
+	test_surface->view->is_mapped = true;
 }
 
 static void
@@ -113,7 +118,7 @@ move_surface(struct wl_client *client, struct wl_resource *resource,
 		wl_resource_get_user_data(surface_resource);
 	struct weston_test_surface *test_surface;
 
-	test_surface = surface->configure_private;
+	test_surface = surface->committed_private;
 	if (!test_surface) {
 		test_surface = malloc(sizeof *test_surface);
 		if (!test_surface) {
@@ -128,8 +133,8 @@ move_surface(struct wl_client *client, struct wl_resource *resource,
 			return;
 		}
 
-		surface->configure_private = test_surface;
-		surface->configure = test_surface_configure;
+		surface->committed_private = test_surface;
+		surface->committed = test_surface_committed;
 	}
 
 	test_surface->surface = surface;
@@ -145,10 +150,15 @@ move_pointer(struct wl_client *client, struct wl_resource *resource,
 	struct weston_test *test = wl_resource_get_user_data(resource);
 	struct weston_seat *seat = get_seat(test);
 	struct weston_pointer *pointer = weston_seat_get_pointer(seat);
+	struct weston_pointer_motion_event event = { 0 };
 
-	notify_motion(seat, 100,
-		      wl_fixed_from_int(x) - pointer->x,
-		      wl_fixed_from_int(y) - pointer->y);
+	event = (struct weston_pointer_motion_event) {
+		.mask = WESTON_POINTER_MOTION_REL,
+		.dx = wl_fixed_to_double(wl_fixed_from_int(x) - pointer->x),
+		.dy = wl_fixed_to_double(wl_fixed_from_int(y) - pointer->y),
+	};
+
+	notify_motion(seat, 100, &event);
 
 	notify_pointer_position(test, resource);
 }
@@ -176,13 +186,13 @@ activate_surface(struct wl_client *client, struct wl_resource *resource,
 	seat = get_seat(test);
 	keyboard = weston_seat_get_keyboard(seat);
 	if (surface) {
-		weston_surface_activate(surface, seat);
+		weston_seat_set_keyboard_focus(seat, surface);
 		notify_keyboard_focus_in(seat, &keyboard->keys,
 					 STATE_UPDATE_AUTOMATIC);
 	}
 	else {
 		notify_keyboard_focus_out(seat);
-		weston_surface_activate(surface, seat);
+		weston_seat_set_keyboard_focus(seat, surface);
 	}
 }
 
@@ -385,7 +395,7 @@ test_screenshot_frame_notify(struct wl_listener *listener, void *data)
 		return;
 	}
 
-	// FIXME: Needs to handle output transformations
+	/* FIXME: Needs to handle output transformations */
 
 	compositor->renderer->read_pixels(output,
 					  compositor->read_format,
@@ -597,7 +607,8 @@ module_init(struct weston_compositor *ec,
 
 	/* add devices */
 	weston_seat_init_pointer(&test->seat);
-	weston_seat_init_keyboard(&test->seat, NULL);
+	if (weston_seat_init_keyboard(&test->seat, NULL) < 0)
+		return -1;
 	weston_seat_init_touch(&test->seat);
 
 	loop = wl_display_get_event_loop(ec->wl_display);

@@ -11,6 +11,8 @@ cursor-theme=default
 cursor-size=32
 
 base-layer-id=1000
+base-layer-id-offset=10000
+
 workspace-background-layer-id=2000
 workspace-layer-id=3000
 application-layer-id=4000
@@ -21,6 +23,7 @@ background-image=@abs_top_srcdir@/data/background.png
 background-id=1001
 panel-image=@abs_top_srcdir@/data/panel.png
 panel-id=1002
+surface-id-offset=10
 tiling-image=@abs_top_srcdir@/data/tiling.png
 tiling-id=1003
 sidebyside-image=@abs_top_srcdir@/data/sidebyside.png

@@ -23,8 +23,9 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-#include <config.h>
+#include "config.h"
 
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,9 +38,10 @@
 
 #include <wayland-client.h>
 #include "shared/os-compatibility.h"
-#include "xdg-shell-client-protocol.h"
-#include "fullscreen-shell-client-protocol.h"
-#include "scaler-client-protocol.h"
+#include "shared/zalloc.h"
+#include "xdg-shell-unstable-v6-client-protocol.h"
+#include "fullscreen-shell-unstable-v1-client-protocol.h"
+#include "viewporter-client-protocol.h"
 
 int print_debug = 0;
 
@@ -48,9 +50,9 @@ struct display {
 	struct wl_registry *registry;
 	int compositor_version;
 	struct wl_compositor *compositor;
-	struct wl_scaler *scaler;
-	struct xdg_shell *shell;
-	struct _wl_fullscreen_shell *fshell;
+	struct wp_viewporter *viewporter;
+	struct zxdg_shell_v6 *shell;
+	struct zwp_fullscreen_shell_v1 *fshell;
 	struct wl_shm *shm;
 	uint32_t formats;
 };
@@ -64,17 +66,20 @@ struct buffer {
 enum window_flags {
 	WINDOW_FLAG_USE_VIEWPORT = 0x1,
 	WINDOW_FLAG_ROTATING_TRANSFORM = 0x2,
+	WINDOW_FLAG_USE_DAMAGE_BUFFER = 0x4,
 };
 
 struct window {
 	struct display *display;
 	int width, height, border;
 	struct wl_surface *surface;
-	struct wl_viewport *viewport;
-	struct xdg_surface *xdg_surface;
+	struct wp_viewport *viewport;
+	struct zxdg_surface_v6 *xdg_surface;
+	struct zxdg_toplevel_v6 *xdg_toplevel;
 	struct wl_callback *callback;
 	struct buffer buffers[2];
 	struct buffer *prev_buffer;
+	bool wait_for_configure;
 
 	enum window_flags flags;
 	int scale;
@@ -89,6 +94,9 @@ struct window {
 };
 
 static int running = 1;
+
+static void
+redraw(void *data, struct wl_callback *callback, uint32_t time);
 
 static void
 buffer_release(void *data, struct wl_buffer *buffer)
@@ -141,21 +149,39 @@ create_shm_buffer(struct display *display, struct buffer *buffer,
 }
 
 static void
-handle_configure(void *data, struct xdg_surface *surface,
-		 int32_t width, int32_t height, struct wl_array *states,
-		 uint32_t serial)
+xdg_surface_handle_configure(void *data, struct zxdg_surface_v6 *surface,
+			     uint32_t serial)
+{
+	struct window *window = data;
+
+	zxdg_surface_v6_ack_configure(surface, serial);
+
+	if (window->wait_for_configure) {
+		redraw(window, NULL, 0);
+		window->wait_for_configure = false;
+	}
+}
+
+static const struct zxdg_surface_v6_listener xdg_surface_listener = {
+	xdg_surface_handle_configure,
+};
+
+static void
+xdg_toplevel_handle_configure(void *data, struct zxdg_toplevel_v6 *toplevel,
+			      int32_t width, int32_t height,
+			      struct wl_array *states)
 {
 }
 
 static void
-handle_close(void *data, struct xdg_surface *xdg_surface)
+xdg_toplevel_handle_close(void *data, struct zxdg_toplevel_v6 *xdg_toplevel)
 {
 	running = 0;
 }
 
-static const struct xdg_surface_listener xdg_surface_listener = {
-	handle_configure,
-	handle_close,
+static const struct zxdg_toplevel_v6_listener xdg_toplevel_listener = {
+	xdg_toplevel_handle_configure,
+	xdg_toplevel_handle_close,
 };
 
 static float
@@ -256,12 +282,21 @@ create_window(struct display *display, int width, int height,
 		exit(1);
 	}
 
-	if (display->scaler == NULL && (flags & WINDOW_FLAG_USE_VIEWPORT)) {
-		fprintf(stderr, "Compositor does not support wl_viewport");
+	if (display->viewporter == NULL && (flags & WINDOW_FLAG_USE_VIEWPORT)) {
+		fprintf(stderr, "Compositor does not support wp_viewport");
 		exit(1);
 	}
 
-	window = calloc(1, sizeof *window);
+	if (display->compositor_version <
+	    WL_SURFACE_DAMAGE_BUFFER_SINCE_VERSION &&
+	    (flags & WINDOW_FLAG_USE_DAMAGE_BUFFER)) {
+		fprintf(stderr, "wl_surface.damage_buffer unsupported in "
+				"wl_surface version %d\n",
+			display->compositor_version);
+		exit(1);
+	}
+
+	window = zalloc(sizeof *window);
 	if (!window)
 		return NULL;
 
@@ -279,32 +314,47 @@ create_window(struct display *display, int width, int height,
 	window->surface = wl_compositor_create_surface(display->compositor);
 
 	if (window->flags & WINDOW_FLAG_USE_VIEWPORT)
-		window->viewport = wl_scaler_get_viewport(display->scaler,
-							  window->surface);
+		window->viewport = wp_viewporter_get_viewport(display->viewporter,
+							      window->surface);
 
 	if (display->shell) {
 		window->xdg_surface =
-			xdg_shell_get_xdg_surface(display->shell,
-						  window->surface);
+			zxdg_shell_v6_get_xdg_surface(display->shell,
+						      window->surface);
 
 		assert(window->xdg_surface);
 
-		xdg_surface_add_listener(window->xdg_surface,
-					 &xdg_surface_listener, window);
+		zxdg_surface_v6_add_listener(window->xdg_surface,
+					     &xdg_surface_listener, window);
 
-		xdg_surface_set_title(window->xdg_surface, "simple-damage");
+		window->xdg_toplevel =
+			zxdg_surface_v6_get_toplevel(window->xdg_surface);
+
+		assert(window->xdg_toplevel);
+
+		zxdg_toplevel_v6_add_listener(window->xdg_toplevel,
+					      &xdg_toplevel_listener, window);
+
+		zxdg_toplevel_v6_set_title(window->xdg_toplevel, "simple-damage");
+
+		window->wait_for_configure = true;
+		wl_surface_commit(window->surface);
 	} else if (display->fshell) {
-		_wl_fullscreen_shell_present_surface(display->fshell,
-						     window->surface,
-						     _WL_FULLSCREEN_SHELL_PRESENT_METHOD_DEFAULT,
-						     NULL);
+		zwp_fullscreen_shell_v1_present_surface(display->fshell,
+							window->surface,
+							ZWP_FULLSCREEN_SHELL_V1_PRESENT_METHOD_DEFAULT,
+							NULL);
 	} else {
 		assert(0);
 	}
 
 	/* Initialise damage to full surface, so the padding gets painted */
-	wl_surface_damage(window->surface, 0, 0, INT32_MAX, INT32_MAX);
-
+	if (window->flags & WINDOW_FLAG_USE_DAMAGE_BUFFER) {
+		wl_surface_damage_buffer(window->surface, 0, 0,
+					 INT32_MAX, INT32_MAX);
+	} else {
+		wl_surface_damage(window->surface, 0, 0, INT32_MAX, INT32_MAX);
+	}
 	return window;
 }
 
@@ -319,10 +369,12 @@ destroy_window(struct window *window)
 	if (window->buffers[1].buffer)
 		wl_buffer_destroy(window->buffers[1].buffer);
 
+	if (window->xdg_toplevel)
+		zxdg_toplevel_v6_destroy(window->xdg_toplevel);
 	if (window->xdg_surface)
-		xdg_surface_destroy(window->xdg_surface);
+		zxdg_surface_v6_destroy(window->xdg_surface);
 	if (window->viewport)
-		wl_viewport_destroy(window->viewport);
+		wp_viewport_destroy(window->viewport);
 	wl_surface_destroy(window->surface);
 	free(window);
 }
@@ -454,8 +506,8 @@ redraw(void *data, struct wl_callback *callback, uint32_t time)
 {
 	struct window *window = data;
 	struct buffer *buffer;
-	int off_x, off_y, bwidth, bheight, bborder, bpitch, bradius;
-	uint32_t *buffer_data;
+	int off_x = 0, off_y = 0;
+	int bwidth, bheight, bborder, bpitch, bradius;
 	float bx, by;
 
 	buffer = window_next_buffer(window);
@@ -494,8 +546,8 @@ redraw(void *data, struct wl_callback *callback, uint32_t time)
 	bborder = window->border * window->scale;
 	bradius = window->ball.radius * window->scale;
 
-	buffer_data = buffer->shm_data;
 	if (window->viewport) {
+		int tx, ty;
 		/* Fill the whole thing with red to detect viewport errors */
 		paint_box(buffer->shm_data, bpitch, 0, 0, bwidth, bheight,
 			  0xffff0000);
@@ -508,38 +560,44 @@ redraw(void *data, struct wl_callback *callback, uint32_t time)
 		bheight /= 2;
 
 		/* Offset the drawing region */
-		off_x = (window->width / 3) * window->scale;
-		off_y = (window->height / 5) * window->scale;
+		tx = (window->width / 3) * window->scale;
+		ty = (window->height / 5) * window->scale;
 		switch (window->transform) {
 		default:
 		case WL_OUTPUT_TRANSFORM_NORMAL:
-			buffer_data += off_y * bpitch + off_x;
+			off_y = ty;
+			off_x = tx;
 			break;
 		case WL_OUTPUT_TRANSFORM_90:
-			buffer_data += off_x * bpitch + (bwidth - off_y);
+			off_y = tx;
+			off_x = bwidth - ty;
 			break;
 		case WL_OUTPUT_TRANSFORM_180:
-			buffer_data += (bheight - off_y) * bpitch +
-				       (bwidth - off_x);
+			off_y = bheight - ty;
+			off_x = bwidth - tx;
 			break;
 		case WL_OUTPUT_TRANSFORM_270:
-			buffer_data += (bheight - off_x) * bpitch + off_y;
+			off_y = bheight - tx;
+			off_x = ty;
 			break;
 		case WL_OUTPUT_TRANSFORM_FLIPPED:
-			buffer_data += off_y * bpitch + (bwidth - off_x);
+			off_y = ty;
+			off_x = bwidth - tx;
 			break;
 		case WL_OUTPUT_TRANSFORM_FLIPPED_90:
-			buffer_data += (bheight - off_x) * bpitch +
-				       (bwidth - off_y);
+			off_y = bheight - tx;
+			off_x = bwidth - ty;
 			break;
 		case WL_OUTPUT_TRANSFORM_FLIPPED_180:
-			buffer_data += (bheight - off_y) * bpitch + off_x;
+			off_y = bheight - ty;
+			off_x = tx;
 			break;
 		case WL_OUTPUT_TRANSFORM_FLIPPED_270:
-			buffer_data += off_x * bpitch + off_y;
+			off_y = tx;
+			off_x = ty;
 			break;
 		}
-		wl_viewport_set_source(window->viewport,
+		wp_viewport_set_source(window->viewport,
 				       wl_fixed_from_int(window->width / 3),
 				       wl_fixed_from_int(window->height / 5),
 				       wl_fixed_from_int(window->width / 2),
@@ -547,30 +605,41 @@ redraw(void *data, struct wl_callback *callback, uint32_t time)
 	}
 
 	/* Paint the border */
-	paint_box(buffer_data, bpitch, 0, 0, bwidth, bborder, 0xffffffff);
-	paint_box(buffer_data, bpitch, 0, 0, bborder, bheight, 0xffffffff);
-	paint_box(buffer_data, bpitch,
-		  bwidth - bborder, 0, bborder, bheight, 0xffffffff);
-	paint_box(buffer_data, bpitch,
-		  0, bheight - bborder, bwidth, bborder, 0xffffffff);
+	paint_box(buffer->shm_data, bpitch, off_x, off_y,
+		  bwidth, bborder, 0xffffffff);
+	paint_box(buffer->shm_data, bpitch, off_x, off_y,
+		  bborder, bheight, 0xffffffff);
+	paint_box(buffer->shm_data, bpitch, off_x + bwidth - bborder, off_y,
+		  bborder, bheight, 0xffffffff);
+	paint_box(buffer->shm_data, bpitch, off_x, off_y + bheight - bborder,
+		  bwidth, bborder, 0xffffffff);
 
 	/* fill with translucent */
-	paint_box(buffer_data, bpitch, bborder, bborder,
+	paint_box(buffer->shm_data, bpitch, off_x + bborder, off_y + bborder,
 		  bwidth - 2 * bborder, bheight - 2 * bborder, 0x80000000);
 
 	/* Damage where the ball was */
-	wl_surface_damage(window->surface,
-			  window->ball.x - window->ball.radius,
-			  window->ball.y - window->ball.radius,
-			  window->ball.radius * 2 + 1,
-			  window->ball.radius * 2 + 1);
-
+	if (window->flags & WINDOW_FLAG_USE_DAMAGE_BUFFER) {
+		window_get_transformed_ball(window, &bx, &by);
+		wl_surface_damage_buffer(window->surface,
+					 bx - bradius + off_x,
+					 by - bradius + off_y,
+					 bradius * 2 + 1,
+					 bradius * 2 + 1);
+	} else {
+		wl_surface_damage(window->surface,
+				  window->ball.x - window->ball.radius,
+				  window->ball.y - window->ball.radius,
+				  window->ball.radius * 2 + 1,
+				  window->ball.radius * 2 + 1);
+	}
 	window_advance_game(window, time);
 
 	window_get_transformed_ball(window, &bx, &by);
 
 	/* Paint the ball */
-	paint_circle(buffer_data, bpitch, bx, by, bradius, 0xff00ff00);
+	paint_circle(buffer->shm_data, bpitch, off_x + bx, off_y + by,
+		     bradius, 0xff00ff00);
 
 	if (print_debug) {
 		printf("Ball now located at (%f, %f)\n",
@@ -580,17 +649,25 @@ redraw(void *data, struct wl_callback *callback, uint32_t time)
 		       bradius);
 
 		printf("Buffer damage rectangle: (%d, %d) @ %dx%d\n",
-		       (int)(bx - bradius), (int)(by - bradius),
+		       (int)(bx - bradius) + off_x,
+		       (int)(by - bradius) + off_y,
 		       bradius * 2 + 1, bradius * 2 + 1);
 	}
 
 	/* Damage where the ball is now */
-	wl_surface_damage(window->surface,
-			  window->ball.x - window->ball.radius,
-			  window->ball.y - window->ball.radius,
-			  window->ball.radius * 2 + 1,
-			  window->ball.radius * 2 + 1);
-
+	if (window->flags & WINDOW_FLAG_USE_DAMAGE_BUFFER) {
+		wl_surface_damage_buffer(window->surface,
+					 bx - bradius + off_x,
+					 by - bradius + off_y,
+					 bradius * 2 + 1,
+					 bradius * 2 + 1);
+	} else {
+		wl_surface_damage(window->surface,
+				  window->ball.x - window->ball.radius,
+				  window->ball.y - window->ball.radius,
+				  window->ball.radius * 2 + 1,
+				  window->ball.radius * 2 + 1);
+	}
 	wl_surface_attach(window->surface, buffer->buffer, 0, 0);
 
 	if (window->display->compositor_version >= 2 &&
@@ -600,7 +677,7 @@ redraw(void *data, struct wl_callback *callback, uint32_t time)
 						window->transform);
 
 	if (window->viewport)
-		wl_viewport_set_destination(window->viewport,
+		wp_viewport_set_destination(window->viewport,
 					    window->width,
 					    window->height);
 
@@ -634,20 +711,14 @@ struct wl_shm_listener shm_listener = {
 };
 
 static void
-xdg_shell_ping(void *data, struct xdg_shell *shell, uint32_t serial)
+xdg_shell_ping(void *data, struct zxdg_shell_v6*shell, uint32_t serial)
 {
-	xdg_shell_pong(shell, serial);
+	zxdg_shell_v6_pong(shell, serial);
 }
 
-static const struct xdg_shell_listener xdg_shell_listener = {
+static const struct zxdg_shell_v6_listener xdg_shell_listener = {
 	xdg_shell_ping,
 };
-
-#define XDG_VERSION 5 /* The version of xdg-shell that we implement */
-#ifdef static_assert
-static_assert(XDG_VERSION == XDG_SHELL_VERSION_CURRENT,
-	      "Interface version doesn't match implementation version");
-#endif
 
 static void
 registry_handle_global(void *data, struct wl_registry *registry,
@@ -669,17 +740,16 @@ registry_handle_global(void *data, struct wl_registry *registry,
 			wl_registry_bind(registry,
 					 id, &wl_compositor_interface,
 					 d->compositor_version);
-	} else if (strcmp(interface, "wl_scaler") == 0 && version >= 2) {
-		d->scaler = wl_registry_bind(registry,
-					     id, &wl_scaler_interface, 2);
-	} else if (strcmp(interface, "xdg_shell") == 0) {
+	} else if (strcmp(interface, "wp_viewporter") == 0) {
+		d->viewporter = wl_registry_bind(registry, id,
+						 &wp_viewporter_interface, 1);
+	} else if (strcmp(interface, "zxdg_shell_v6") == 0) {
 		d->shell = wl_registry_bind(registry,
-					    id, &xdg_shell_interface, 1);
-		xdg_shell_use_unstable_version(d->shell, XDG_VERSION);
-		xdg_shell_add_listener(d->shell, &xdg_shell_listener, d);
-	} else if (strcmp(interface, "_wl_fullscreen_shell") == 0) {
+					    id, &zxdg_shell_v6_interface, 1);
+		zxdg_shell_v6_add_listener(d->shell, &xdg_shell_listener, d);
+	} else if (strcmp(interface, "zwp_fullscreen_shell_v1") == 0) {
 		d->fshell = wl_registry_bind(registry,
-					     id, &_wl_fullscreen_shell_interface, 1);
+					     id, &zwp_fullscreen_shell_v1_interface, 1);
 	} else if (strcmp(interface, "wl_shm") == 0) {
 		d->shm = wl_registry_bind(registry,
 					  id, &wl_shm_interface, 1);
@@ -739,13 +809,13 @@ destroy_display(struct display *display)
 		wl_shm_destroy(display->shm);
 
 	if (display->shell)
-		xdg_shell_destroy(display->shell);
+		zxdg_shell_v6_destroy(display->shell);
 
 	if (display->fshell)
-		_wl_fullscreen_shell_release(display->fshell);
+		zwp_fullscreen_shell_v1_release(display->fshell);
 
-	if (display->scaler)
-		wl_scaler_destroy(display->scaler);
+	if (display->viewporter)
+		wp_viewporter_destroy(display->viewporter);
 
 	if (display->compositor)
 		wl_compositor_destroy(display->compositor);
@@ -776,7 +846,8 @@ print_usage(int retval)
 		"  --scale=SCALE\t\tScale factor for the surface\n"
 		"  --transform=TRANSFORM\tTransform for the surface\n"
 		"  --rotating-transform\tUse a different buffer_transform for each frame\n"
-		"  --use-viewport\tUse wl_viewport\n"
+		"  --use-viewport\tUse wp_viewport\n"
+		"  --use-damage-buffer\tUse damage_buffer to post damage\n"
 	);
 
 	exit(retval);
@@ -827,7 +898,7 @@ main(int argc, char **argv)
 		    strcmp(argv[i], "-h") == 0) {
 			print_usage(0);
 		} else if (sscanf(argv[i], "--version=%d", &version) > 0) {
-			if (version < 1 || version > 3) {
+			if (version < 1 || version > 4) {
 				fprintf(stderr, "Unsupported wl_surface version: %d\n",
 					version);
 				return 1;
@@ -851,6 +922,9 @@ main(int argc, char **argv)
 		} else if (strcmp(argv[i], "--use-viewport") == 0) {
 			flags |= WINDOW_FLAG_USE_VIEWPORT;
 			continue;
+		} else if (strcmp(argv[i], "--use-damage-buffer") == 0) {
+			flags |= WINDOW_FLAG_USE_DAMAGE_BUFFER;
+			continue;
 		} else {
 			printf("Invalid option: %s\n", argv[i]);
 			print_usage(255);
@@ -868,7 +942,8 @@ main(int argc, char **argv)
 	sigint.sa_flags = SA_RESETHAND;
 	sigaction(SIGINT, &sigint, NULL);
 
-	redraw(window, NULL, 0);
+	if (!window->wait_for_configure)
+		redraw(window, NULL, 0);
 
 	while (running && ret != -1)
 		ret = wl_display_dispatch(display->display);

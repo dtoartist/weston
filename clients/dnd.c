@@ -42,6 +42,7 @@
 #include "window.h"
 #include "shared/cairo-util.h"
 #include "shared/helpers.h"
+#include "shared/xalloc.h"
 
 struct dnd_drag;
 
@@ -72,6 +73,7 @@ struct dnd_drag {
 	struct item *item;
 	int x_offset, y_offset;
 	int width, height;
+	uint32_t dnd_action;
 	const char *mime_type;
 
 	struct wl_surface *drag_surface;
@@ -189,7 +191,7 @@ dnd_redraw_handler(struct widget *widget, void *data)
 	struct dnd *dnd = data;
 	struct rectangle allocation;
 	cairo_t *cr;
-	cairo_surface_t *surface;
+	cairo_surface_t *surface, *item_surface;
 	unsigned int i;
 
 	surface = window_get_surface(dnd->window);
@@ -209,7 +211,13 @@ dnd_redraw_handler(struct widget *widget, void *data)
 	for (i = 0; i < ARRAY_LENGTH(dnd->items); i++) {
 		if (!dnd->items[i])
 			continue;
-		cairo_set_source_surface(cr, dnd->items[i]->surface,
+
+		if (dnd->current_drag && dnd->items[i] == dnd->current_drag->item)
+			item_surface = dnd->current_drag->translucent;
+		else
+			item_surface = dnd->items[i]->surface;
+
+		cairo_set_source_surface(cr, item_surface,
 					 dnd->items[i]->x + allocation.x,
 					 dnd->items[i]->y + allocation.y);
 		cairo_paint(cr);
@@ -265,17 +273,38 @@ dnd_get_item(struct dnd *dnd, int32_t x, int32_t y)
 	return NULL;
 }
 
-static void
-data_source_target(void *data,
-		   struct wl_data_source *source, const char *mime_type)
+static int
+lookup_dnd_cursor(uint32_t dnd_action)
 {
-	struct dnd_drag *dnd_drag = data;
+	if (dnd_action == WL_DATA_DEVICE_MANAGER_DND_ACTION_MOVE)
+		return CURSOR_DND_MOVE;
+	else if (dnd_action == WL_DATA_DEVICE_MANAGER_DND_ACTION_COPY)
+		return CURSOR_DND_COPY;
+
+	return CURSOR_DND_FORBIDDEN;
+}
+
+static void
+dnd_drag_update_cursor(struct dnd_drag *dnd_drag)
+{
+	int cursor;
+
+	if (dnd_drag->mime_type == NULL)
+		cursor = CURSOR_DND_FORBIDDEN;
+	else
+		cursor = lookup_dnd_cursor(dnd_drag->dnd_action);
+
+	input_set_pointer_image(dnd_drag->input, cursor);
+}
+
+static void
+dnd_drag_update_surface(struct dnd_drag *dnd_drag)
+{
 	struct dnd *dnd = dnd_drag->dnd;
 	cairo_surface_t *surface;
 	struct wl_buffer *buffer;
 
-	dnd_drag->mime_type = mime_type;
-	if (mime_type)
+	if (dnd_drag->mime_type && dnd_drag->dnd_action)
 		surface = dnd_drag->opaque;
 	else
 		surface = dnd_drag->translucent;
@@ -285,6 +314,17 @@ data_source_target(void *data,
 	wl_surface_damage(dnd_drag->drag_surface, 0, 0,
 			  dnd_drag->width, dnd_drag->height);
 	wl_surface_commit(dnd_drag->drag_surface);
+}
+
+static void
+data_source_target(void *data,
+		   struct wl_data_source *source, const char *mime_type)
+{
+	struct dnd_drag *dnd_drag = data;
+
+	dnd_drag->mime_type = mime_type;
+	dnd_drag_update_surface(dnd_drag);
+	dnd_drag_update_cursor(dnd_drag);
 }
 
 static void
@@ -318,19 +358,27 @@ data_source_send(void *data, struct wl_data_source *source,
 }
 
 static void
-data_source_cancelled(void *data, struct wl_data_source *source)
+dnd_drag_destroy(struct dnd_drag *dnd_drag, bool delete_item)
 {
-	struct dnd_drag *dnd_drag = data;
-
-	/* The 'cancelled' event means that the source is no longer in
-	 * use by the drag (or current selection).  We need to clean
-	 * up the drag object created and the local state. */
+	struct dnd *dnd = dnd_drag->dnd;
+	unsigned int i;
 
 	wl_data_source_destroy(dnd_drag->data_source);
 
-	/* Destroy the item that has been dragged out */
-	cairo_surface_destroy(dnd_drag->item->surface);
-	free(dnd_drag->item);
+	if (delete_item) {
+		for (i = 0; i < ARRAY_LENGTH(dnd->items); i++) {
+			if (dnd_drag->item == dnd->items[i]) {
+				dnd->items[i] = NULL;
+				break;
+			}
+		}
+
+		/* Destroy the item that has been dragged out */
+		cairo_surface_destroy(dnd_drag->item->surface);
+		free(dnd_drag->item);
+	}
+
+	dnd->current_drag = NULL;
 
 	wl_surface_destroy(dnd_drag->drag_surface);
 
@@ -339,10 +387,58 @@ data_source_cancelled(void *data, struct wl_data_source *source)
 	free(dnd_drag);
 }
 
+static void
+data_source_cancelled(void *data, struct wl_data_source *source)
+{
+	struct dnd_drag *dnd_drag = data;
+	struct dnd *dnd = dnd_drag->dnd;
+
+	/* The 'cancelled' event means that the source is no longer in
+	 * use by the drag (or current selection).  We need to clean
+	 * up the drag object created and the local state. */
+	dnd_drag_destroy(dnd_drag, false);
+	window_schedule_redraw(dnd->window);
+}
+
+static void
+data_source_dnd_drop_performed(void *data, struct wl_data_source *source)
+{
+}
+
+static void
+data_source_dnd_finished(void *data, struct wl_data_source *source)
+{
+	struct dnd_drag *dnd_drag = data;
+	struct dnd *dnd = dnd_drag->dnd;
+	bool delete_item;
+
+	delete_item =
+		dnd_drag->dnd_action == WL_DATA_DEVICE_MANAGER_DND_ACTION_MOVE;
+
+        /* The operation is already finished, we can destroy all
+         * related data.
+         */
+	dnd_drag_destroy(dnd_drag, delete_item);
+	window_schedule_redraw(dnd->window);
+}
+
+static void
+data_source_action(void *data, struct wl_data_source *source, uint32_t dnd_action)
+{
+	struct dnd_drag *dnd_drag = data;
+
+	dnd_drag->dnd_action = dnd_action;
+	dnd_drag_update_surface(dnd_drag);
+	dnd_drag_update_cursor(dnd_drag);
+}
+
 static const struct wl_data_source_listener data_source_listener = {
 	data_source_target,
 	data_source_send,
-	data_source_cancelled
+	data_source_cancelled,
+	data_source_dnd_drop_performed,
+	data_source_dnd_finished,
+	data_source_action,
 };
 
 static cairo_surface_t *
@@ -391,6 +487,7 @@ create_drag_source(struct dnd *dnd,
 	unsigned int i;
 	uint32_t serial;
 	cairo_surface_t *icon;
+	uint32_t actions;
 
 	widget_get_allocation(dnd->widget, &allocation);
 	item = dnd_get_item(dnd, x, y);
@@ -405,19 +502,32 @@ create_drag_source(struct dnd *dnd,
 		dnd_drag->item = item;
 		dnd_drag->x_offset = x - item->x;
 		dnd_drag->y_offset = y - item->y;
+		dnd_drag->dnd_action = WL_DATA_DEVICE_MANAGER_DND_ACTION_MOVE;
+		dnd_drag->mime_type = NULL;
 
-		for (i = 0; i < ARRAY_LENGTH(dnd->items); i++) {
-			if (item == dnd->items[i]){
-				dnd->items[i] = 0;
-				break;
-			}
-		}
+		actions = WL_DATA_DEVICE_MANAGER_DND_ACTION_MOVE |
+			WL_DATA_DEVICE_MANAGER_DND_ACTION_COPY;
 
 		display = window_get_display(dnd->window);
 		compositor = display_get_compositor(display);
 		serial = display_get_serial(display);
 		dnd_drag->drag_surface =
 			wl_compositor_create_surface(compositor);
+
+		if (display_get_data_device_manager_version(display) <
+		    WL_DATA_SOURCE_SET_ACTIONS_SINCE_VERSION) {
+			/* Data sources version < 3 will not get action
+			 * nor dnd_finished events, as we can't honor
+			 * the "move" action at the time of finishing
+			 * drag-and-drop, do it preemptively here.
+			 */
+			for (i = 0; i < ARRAY_LENGTH(dnd->items); i++) {
+				if (item == dnd->items[i]){
+					dnd->items[i] = NULL;
+					break;
+				}
+			}
+		}
 
 		if (dnd->self_only) {
 			dnd_drag->data_source = NULL;
@@ -431,6 +541,11 @@ create_drag_source(struct dnd *dnd,
 					     flower_mime_type);
 			wl_data_source_offer(dnd_drag->data_source,
 					     text_mime_type);
+		}
+
+		if (display_get_data_device_manager_version(display) >=
+		    WL_DATA_SOURCE_SET_ACTIONS_SINCE_VERSION) {
+			wl_data_source_set_actions(dnd_drag->data_source, actions);
 		}
 
 		wl_data_device_start_drag(input_get_data_device(input),
@@ -542,8 +657,6 @@ dnd_enter_handler(struct widget *widget,
 	struct dnd *dnd = data;
 	struct pointer *new_pointer = malloc(sizeof *new_pointer);
 
-	dnd->current_drag = NULL;
-
 	if (new_pointer) {
 		new_pointer->input = input;
 		new_pointer->dragging = false;
@@ -654,7 +767,6 @@ dnd_drop_handler(struct window *window, struct input *input,
 		message.x_offset = dnd->current_drag->x_offset;
 		message.y_offset = dnd->current_drag->y_offset;
 		dnd_receive_func(&message, sizeof message, x, y, dnd);
-		dnd->current_drag = NULL;
 	} else {
 		fprintf(stderr, "ignoring drop from another client\n");
 	}

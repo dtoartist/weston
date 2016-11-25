@@ -30,6 +30,8 @@
 #include <cairo/cairo-xcb.h>
 
 #include "compositor.h"
+#include "compositor/weston.h"
+#include "xwayland-api.h"
 
 #define SEND_EVENT_MASK (0x80)
 #define EVENT_TYPE(event) ((event)->response_type & ~SEND_EVENT_MASK)
@@ -37,20 +39,18 @@
 struct weston_xserver {
 	struct wl_display *wl_display;
 	struct wl_event_loop *loop;
-	struct wl_event_source *sigchld_source;
 	int abstract_fd;
 	struct wl_event_source *abstract_source;
 	int unix_fd;
 	struct wl_event_source *unix_source;
-	int wm_fd;
 	int display;
-	struct wl_event_source *sigusr1_source;
-	struct weston_process process;
-	struct wl_resource *resource;
+	pid_t pid;
 	struct wl_client *client;
 	struct weston_compositor *compositor;
 	struct weston_wm *wm;
 	struct wl_listener destroy_listener;
+	weston_xwayland_spawn_xserver_func_t spawn_func;
+	void *user_data;
 };
 
 struct weston_wm {
@@ -70,7 +70,6 @@ struct weston_wm {
 	xcb_colormap_t colormap;
 	struct wl_listener create_surface_listener;
 	struct wl_listener activate_listener;
-	struct wl_listener transform_listener;
 	struct wl_listener kill_listener;
 	struct wl_list unpaired_window_list;
 
@@ -129,6 +128,7 @@ struct weston_wm {
 		xcb_atom_t		 net_wm_moveresize;
 		xcb_atom_t		 net_supporting_wm_check;
 		xcb_atom_t		 net_supported;
+		xcb_atom_t		 net_active_window;
 		xcb_atom_t		 motif_wm_hints;
 		xcb_atom_t		 clipboard;
 		xcb_atom_t		 clipboard_manager;
@@ -141,6 +141,7 @@ struct weston_wm {
 		xcb_atom_t		 compound_text;
 		xcb_atom_t		 text;
 		xcb_atom_t		 string;
+		xcb_atom_t		 window;
 		xcb_atom_t		 text_plain_utf8;
 		xcb_atom_t		 text_plain;
 		xcb_atom_t		 xdnd_selection;

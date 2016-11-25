@@ -26,8 +26,9 @@
 #include "config.h"
 
 #include <assert.h>
+#include <stdint.h>
 
-#include "src/compositor.h"
+#include "compositor.h"
 
 static void
 surface_to_from_global(void *data)

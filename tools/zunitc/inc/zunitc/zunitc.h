@@ -57,6 +57,7 @@ extern "C" {
 /**
  * Structure to use when defining a test fixture.
  * @note likely pending refactoring as use cases are refined.
+ * @see ZUC_TEST_F()
  */
 struct zuc_fixture {
 	/**
@@ -188,7 +189,7 @@ zuc_list_tests(void);
  * character will match any sequence and the '?' character will match any
  * single character.
  * The '-' character at the start of a pattern marks the end of the
- * patterns required to match and the begining of patterns that names
+ * patterns required to match and the beginning of patterns that names
  * must not match.
  * Defaults to use all tests.
  *
@@ -259,6 +260,9 @@ zuc_set_output_junit(bool enable);
 
 /**
  * Defines a test case that can be registered to run.
+ *
+ * @param tcase name to use as the containing test case.
+ * @param test name used for the test under a given test case.
  */
 #define ZUC_TEST(tcase, test) \
 	static void zuctest_##tcase##_##test(void); \
@@ -277,10 +281,21 @@ zuc_set_output_junit(bool enable);
  * Defines a test case that can be registered to run along with setup/teardown
  * support per-test and/or per test case.
  *
- * @note likely pending refactoring as use cases are refined.
+ * @note This defines a test that *uses* a fixture, it does not
+ * actually define a test fixture itself.
+ *
+ * @param tcase name to use as the containing test case/fixture.
+ * The name used must represent a test fixture instance. It also
+ * must not duplicate any name used in a non-fixture ZUC_TEST()
+ * test.
+ * @note the test case name must be the name of a fixture struct
+ * to be passed to the test.
+ * @param test name used for the test under a given test case.
+ * @param param name for the fixture data pointer.
+ * @see struct zuc_fixture
  */
-#define ZUC_TEST_F(tcase, test) \
-	static void zuctest_##tcase##_##test(void *data); \
+#define ZUC_TEST_F(tcase, test, param)			  \
+	static void zuctest_##tcase##_##test(void *param); \
 	\
 	const struct zuc_registration zzz_##tcase##_##test \
 	__attribute__ ((section ("zuc_tsect"))) = \
@@ -290,7 +305,7 @@ zuc_set_output_junit(bool enable);
 		zuctest_##tcase##_##test	\
 	}; \
 	\
-	static void zuctest_##tcase##_##test(void *data)
+	static void zuctest_##tcase##_##test(void *param)
 
 
 /**
@@ -299,6 +314,7 @@ zuc_set_output_junit(bool enable);
  * @return true if there is currently a test executing and it has
  * encountered any skips.
  * @see zuc_has_failure
+ * @see ZUC_SKIP()
  */
 bool
 zuc_has_skip(void);
@@ -314,7 +330,10 @@ bool
 zuc_has_failure(void);
 
 /**
- * Terminates the current test without marking it as failed.
+ * Marks the running test as skipped without marking it as failed, and returns
+ * from the current function.
+ *
+ * For details on return and test termination see @ref zunitc_overview_return.
  *
  * @param message the message to log as to why the test has been skipped.
  */
@@ -326,7 +345,9 @@ zuc_has_failure(void);
 	while (0)
 
 /**
- * Terminates the current test and marks it as failed.
+ * Marks the running test as failed and returns from the current function.
+ *
+ * For details on return and test termination see @ref zunitc_overview_return.
  *
  * @param message the message to log as to why the test has failed.
  */
@@ -395,7 +416,9 @@ zuc_has_failure(void);
 
 /**
  * Verifies that the specified expression is true, marks the test as failed
- * and terminates the test if it is not.
+ * and exits the current function via 'return' if it is not.
+ *
+ * For details on return and test termination see @ref zunitc_overview_return.
  *
  * @param condition the expression that is expected to be true.
  * @note it is far better to use a more specific check when possible
@@ -407,7 +430,9 @@ zuc_has_failure(void);
 
 /**
  * Verifies that the specified expression is false, marks the test as
- * failed and terminates the test if it is not.
+ * failed and exits the current function via 'return' if it is not.
+ *
+ * For details on return and test termination see @ref zunitc_overview_return.
  *
  * @param condition the expression that is expected to be false.
  * @note it is far better to use a more specific check when possible
@@ -419,7 +444,9 @@ zuc_has_failure(void);
 
 /**
  * Verifies that the specified expression is NULL, marks the test as failed
- * and terminates the test if it is not.
+ * and exits the current function via 'return' if it is not.
+ *
+ * For details on return and test termination see @ref zunitc_overview_return.
  *
  * @param condition the expression that is expected to be a NULL pointer.
  * @see ZUC_ASSERTG_NULL()
@@ -429,7 +456,9 @@ zuc_has_failure(void);
 
 /**
  * Verifies that the specified expression is non-NULL, marks the test as
- * failed and terminates the test if it is not.
+ * failed and exits the current function via 'return' if it is not.
+ *
+ * For details on return and test termination see @ref zunitc_overview_return.
  *
  * @param condition the expression that is expected to be a non-NULL pointer.
  * @see ZUC_ASSERTG_NOT_NULL()
@@ -439,7 +468,9 @@ zuc_has_failure(void);
 
 /**
  * Verifies that the values of the specified expressions match, marks the
- * test as failed and terminates the test if they do not.
+ * test as failed and exits the current function via 'return' if they do not.
+ *
+ * For details on return and test termination see @ref zunitc_overview_return.
  *
  * @param expected the value the result should hold.
  * @param actual the actual value seen in testing.
@@ -450,7 +481,9 @@ zuc_has_failure(void);
 
 /**
  * Verifies that the values of the specified expressions differ, marks the
- * test as failed and terminates the test if they do not.
+ * test as failed and exits the current function via 'return' if they do not.
+ *
+ * For details on return and test termination see @ref zunitc_overview_return.
  *
  * @param expected the value the result should not hold.
  * @param actual the actual value seen in testing.
@@ -461,8 +494,10 @@ zuc_has_failure(void);
 
 /**
  * Verifies that the value of the first expression is less than the value
- * of the second expression, marks the test as failed and terminates the
- * test if it is not.
+ * of the second expression, marks the test as failed and exits the current
+ * function via 'return' if it is not.
+ *
+ * For details on return and test termination see @ref zunitc_overview_return.
  *
  * @param lesser the expression whose value should be lesser than the other.
  * @param greater the expression whose value should be greater than the other.
@@ -474,7 +509,9 @@ zuc_has_failure(void);
 /**
  * Verifies that the value of the first expression is less than or equal
  * to the value of the second expression, marks the test as failed and
- * terminates the test if it is not.
+ * exits the current function via 'return' if it is not.
+ *
+ * For details on return and test termination see @ref zunitc_overview_return.
  *
  * @param lesser the expression whose value should be lesser than or equal to
  * the other.
@@ -487,8 +524,10 @@ zuc_has_failure(void);
 
 /**
  * Verifies that the value of the first expression is greater than the
- * value of the second expression, marks the test as failed and terminates
- * the test if it is not.
+ * value of the second expression, marks the test as failed and exits the
+ * current function via 'return' if it is not.
+ *
+ * For details on return and test termination see @ref zunitc_overview_return.
  *
  * @param greater the expression whose value should be greater than the other.
  * @param lesser the expression whose value should be lesser than the other.
@@ -499,8 +538,10 @@ zuc_has_failure(void);
 
 /**
  * Verifies that the value of the first expression is greater than or equal
- * to the value of the second expression, marks the test as failed and
- * terminates the test if it is not.
+ * to the value of the second expression, marks the test as failed and exits
+ * the current function via 'return' if it is not.
+ *
+ * For details on return and test termination see @ref zunitc_overview_return.
  *
  * @param greater the expression whose value should be greater than or equal to
  * the other.
@@ -514,7 +555,9 @@ zuc_has_failure(void);
 /**
  * Verifies that the values of the specified expressions match when
  * compared as null-terminated C-style strings, marks the test as failed
- * and terminates the test if they do not.
+ * and exits the current function via 'return' if they do not.
+ *
+ * For details on return and test termination see @ref zunitc_overview_return.
  *
  * @param expected the value the result should hold.
  * @param actual the actual value seen in testing.
@@ -526,7 +569,9 @@ zuc_has_failure(void);
 /**
  * Verifies that the values of the specified expressions differ when
  * compared as null-terminated C-style strings, marks the test as failed
- * and terminates the test if they do not.
+ * and exits the current function via 'return' if they do not.
+ *
+ * For details on return and test termination see @ref zunitc_overview_return.
  *
  * @param expected the value the result should not hold.
  * @param actual the actual value seen in testing.
@@ -537,7 +582,7 @@ zuc_has_failure(void);
 
 /**
  * Verifies that the specified expression is true, marks the test as failed
- * and terminates the test via a 'goto' if it is not.
+ * and interrupts the current execution via a 'goto' if it is not.
  *
  * @param condition the expression that is expected to be true.
  * @note it is far better to use a more specific check when possible
@@ -550,7 +595,7 @@ zuc_has_failure(void);
 
 /**
  * Verifies that the specified expression is false, marks the test as
- * failed and terminates the test via a 'goto' if it is not.
+ * failed and interrupts the current execution via a 'goto' if it is not.
  *
  * @param condition the expression that is expected to be false.
  * @note it is far better to use a more specific check when possible
@@ -563,7 +608,7 @@ zuc_has_failure(void);
 
 /**
  * Verifies that the specified expression is NULL, marks the test as failed
- * and terminates the test via a 'goto' if it is not.
+ * and interrupts the current execution via a 'goto' if it is not.
  *
  * @param condition the expression that is expected to be a NULL pointer.
  * @param label the target for 'goto' if the assertion fails.
@@ -574,7 +619,7 @@ zuc_has_failure(void);
 
 /**
  * Verifies that the specified expression is non-NULL, marks the test as
- * failed and terminates the test via a 'goto' if it is not.
+ * failed and interrupts the current execution via a 'goto' if it is not.
  *
  * @param condition the expression that is expected to be a non-NULL pointer.
  * @param label the target for 'goto' if the assertion fails.
@@ -585,7 +630,8 @@ zuc_has_failure(void);
 
 /**
  * Verifies that the values of the specified expressions match, marks the
- * test as failed and terminates the test via a 'goto' if they do not.
+ * test as failed and interrupts the current execution via a 'goto' if they
+ * do not.
  *
  * @param expected the value the result should hold.
  * @param actual the actual value seen in testing.
@@ -597,7 +643,8 @@ zuc_has_failure(void);
 
 /**
  * Verifies that the values of the specified expressions differ, marks the
- * test as failed and terminates the test via a 'goto' if they do not.
+ * test as failed and interrupts the current execution via a 'goto' if they
+ * do not.
  *
  * @param expected the value the result should not hold.
  * @param actual the actual value seen in testing.
@@ -609,8 +656,8 @@ zuc_has_failure(void);
 
 /**
  * Verifies that the value of the first expression is less than the value
- * of the second expression, marks the test as failed and terminates the
- * test if it is not.
+ * of the second expression, marks the test as failed and interrupts the
+ * current execution via a 'goto' if it is not.
  *
  * @param lesser the expression whose value should be lesser than the other.
  * @param greater the expression whose value should be greater than the other.
@@ -623,7 +670,7 @@ zuc_has_failure(void);
 /**
  * Verifies that the value of the first expression is less than or equal
  * to the value of the second expression, marks the test as failed and
- * terminates the test via a 'goto' if it is not.
+ * interrupts the current execution via a 'goto' if it is not.
  *
  * @param lesser the expression whose value should be lesser than or equal to
  * the other.
@@ -637,8 +684,8 @@ zuc_has_failure(void);
 
 /**
  * Verifies that the value of the first expression is greater than the
- * value of the second expression, marks the test as failed and terminates
- * the test if it is not.
+ * value of the second expression, marks the test as failed and interrupts the
+ * current execution via a 'goto' if it is not.
  *
  * @param greater the expression whose value should be greater than the other.
  * @param lesser the expression whose value should be lesser than the other.
@@ -651,7 +698,7 @@ zuc_has_failure(void);
 /**
  * Verifies that the value of the first expression is greater than or equal
  * to the value of the second expression, marks the test as failed and
- * terminates the test via a 'goto' if it is not.
+ * interrupts the current execution via a 'goto' if it is not.
  *
  * @param greater the expression whose value should be greater than or equal to
  * the other.
@@ -666,7 +713,7 @@ zuc_has_failure(void);
 /**
  * Verifies that the values of the specified expressions match when
  * compared as null-terminated C-style strings, marks the test as failed
- * and terminates the test via a 'goto' if they do not.
+ * and interrupts the current execution via a 'goto' if they do not.
  *
  * @param expected the value the result should hold.
  * @param actual the actual value seen in testing.
@@ -679,7 +726,7 @@ zuc_has_failure(void);
 /**
  * Verifies that the values of the specified expressions differ when
  * compared as null-terminated C-style strings, marks the test as failed
- * and terminates the test via a 'goto' if they do not.
+ * and interrupts the current execution via a 'goto' if they do not.
  *
  * @param expected the value the result should not hold.
  * @param actual the actual value seen in testing.

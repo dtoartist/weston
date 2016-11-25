@@ -15,9 +15,6 @@
 /* Build the RDP compositor */
 #undef BUILD_RDP_COMPOSITOR
 
-/* Build the compositor for Raspberry Pi */
-#undef BUILD_RPI_COMPOSITOR
-
 /* Build the vaapi recorder */
 #undef BUILD_VAAPI_RECORDER
 
@@ -42,9 +39,6 @@
 /* Build Weston with libxkbcommon support */
 #undef ENABLE_XKBCOMMON
 
-/* have Raspberry Pi BCM headers */
-#undef HAVE_BCM_HOST
-
 /* Have cairo-egl */
 #undef HAVE_CAIRO_EGL
 
@@ -68,6 +62,9 @@
 
 /* Define to 1 if you have the <inttypes.h> header file. */
 #undef HAVE_INTTYPES_H
+
+/* Have jpeglib */
+#undef HAVE_JPEG
 
 /* Have lcms support */
 #undef HAVE_LCMS
@@ -153,6 +150,9 @@
 
 /* Define to 1 if you have the ANSI C header files. */
 #undef STDC_HEADERS
+
+/* Build the systemd sd_notify support */
+#undef SYSTEMD_NOTIFY_SUPPORT
 
 /* Use the GLESv2 GL cairo backend */
 #undef USE_CAIRO_GLESV2

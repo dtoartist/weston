@@ -28,11 +28,12 @@
 #include "config.h"
 
 #include <stdlib.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
 #include "ivi-shell.h"
-#include "input-method-server-protocol.h"
+#include "input-method-unstable-v1-server-protocol.h"
 #include "ivi-layout-private.h"
 #include "shared/helpers.h"
 
@@ -86,6 +87,8 @@ show_input_panel_surface(struct input_panel_surface *ipsurf)
 	                          &ipsurf->view->layer_link);
 	weston_view_geometry_dirty(ipsurf->view);
 	weston_view_update_transform(ipsurf->view);
+	ipsurf->surface->is_mapped = true;
+	ipsurf->view->is_mapped = true;
 	weston_surface_damage(ipsurf->surface);
 
 	if (ipsurf->anim)
@@ -157,10 +160,16 @@ update_input_panels(struct wl_listener *listener, void *data)
 	memcpy(&shell->text_input.cursor_rectangle, data, sizeof(pixman_box32_t));
 }
 
-static void
-input_panel_configure(struct weston_surface *surface, int32_t sx, int32_t sy)
+static int
+input_panel_get_label(struct weston_surface *surface, char *buf, size_t len)
 {
-	struct input_panel_surface *ip_surface = surface->configure_private;
+	return snprintf(buf, len, "input panel");
+}
+
+static void
+input_panel_committed(struct weston_surface *surface, int32_t sx, int32_t sy)
+{
+	struct input_panel_surface *ip_surface = surface->committed_private;
 	struct ivi_shell *shell = ip_surface->shell;
 	struct weston_view *view;
 	float x, y;
@@ -193,7 +202,8 @@ destroy_input_panel_surface(struct input_panel_surface *input_panel_surface)
 	wl_list_remove(&input_panel_surface->surface_destroy_listener.link);
 	wl_list_remove(&input_panel_surface->link);
 
-	input_panel_surface->surface->configure = NULL;
+	input_panel_surface->surface->committed = NULL;
+	weston_surface_set_label_func(input_panel_surface->surface, NULL);
 	weston_view_destroy(input_panel_surface->view);
 
 	free(input_panel_surface);
@@ -202,8 +212,8 @@ destroy_input_panel_surface(struct input_panel_surface *input_panel_surface)
 static struct input_panel_surface *
 get_input_panel_surface(struct weston_surface *surface)
 {
-	if (surface->configure == input_panel_configure) {
-		return surface->configure_private;
+	if (surface->committed == input_panel_committed) {
+		return surface->committed_private;
 	} else {
 		return NULL;
 	}
@@ -233,8 +243,9 @@ create_input_panel_surface(struct ivi_shell *shell,
 	if (!input_panel_surface)
 		return NULL;
 
-	surface->configure = input_panel_configure;
-	surface->configure_private = input_panel_surface;
+	surface->committed = input_panel_committed;
+	surface->committed_private = input_panel_surface;
+	weston_surface_set_label_func(surface, input_panel_get_label);
 
 	input_panel_surface->shell = shell;
 
@@ -282,7 +293,7 @@ input_panel_surface_set_overlay_panel(struct wl_client *client,
 	input_panel_surface->panel = 1;
 }
 
-static const struct wl_input_panel_surface_interface input_panel_surface_implementation = {
+static const struct zwp_input_panel_surface_v1_interface input_panel_surface_implementation = {
 	input_panel_surface_set_toplevel,
 	input_panel_surface_set_overlay_panel
 };
@@ -318,20 +329,22 @@ input_panel_get_input_panel_surface(struct wl_client *client,
 	if (!ipsurf) {
 		wl_resource_post_error(surface_resource,
 				       WL_DISPLAY_ERROR_INVALID_OBJECT,
-				       "surface->configure already set");
+				       "surface->committed already set");
 		return;
 	}
 
 	ipsurf->resource =
 		wl_resource_create(client,
-				   &wl_input_panel_surface_interface, 1, id);
+				   &zwp_input_panel_surface_v1_interface,
+				   1,
+				   id);
 	wl_resource_set_implementation(ipsurf->resource,
 				       &input_panel_surface_implementation,
 				       ipsurf,
 				       destroy_input_panel_surface_resource);
 }
 
-static const struct wl_input_panel_interface input_panel_implementation = {
+static const struct zwp_input_panel_v1_interface input_panel_implementation = {
 	input_panel_get_input_panel_surface
 };
 
@@ -351,7 +364,7 @@ bind_input_panel(struct wl_client *client,
 	struct wl_resource *resource;
 
 	resource = wl_resource_create(client,
-				      &wl_input_panel_interface, 1, id);
+				      &zwp_input_panel_v1_interface, 1, id);
 
 	if (shell->input_panel.binding == NULL) {
 		wl_resource_set_implementation(resource,
@@ -390,7 +403,7 @@ input_panel_setup(struct ivi_shell *shell)
 	wl_list_init(&shell->input_panel.surfaces);
 
 	if (wl_global_create(shell->compositor->wl_display,
-			     &wl_input_panel_interface, 1,
+			     &zwp_input_panel_v1_interface, 1,
 			     shell, bind_input_panel) == NULL)
 		return -1;
 

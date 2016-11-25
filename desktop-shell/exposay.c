@@ -25,6 +25,7 @@
 
 #include "config.h"
 
+#include <stdint.h>
 #include <linux/input.h>
 
 #include "shell.h"
@@ -162,7 +163,8 @@ exposay_highlight_surface(struct desktop_shell *shell,
 	shell->exposay.column_current = esurface->column;
 	shell->exposay.cur_output = esurface->eoutput;
 
-	activate(shell, view->surface, shell->exposay.seat, false);
+	activate(shell, view, shell->exposay.seat,
+		 WESTON_ACTIVATE_FLAG_NONE);
 	shell->exposay.focus_current = view;
 }
 
@@ -348,12 +350,12 @@ exposay_focus(struct weston_pointer_grab *grab)
 
 static void
 exposay_motion(struct weston_pointer_grab *grab, uint32_t time,
-	       wl_fixed_t x, wl_fixed_t y)
+	       struct weston_pointer_motion_event *event)
 {
 	struct desktop_shell *shell =
 		container_of(grab, struct desktop_shell, exposay.grab_ptr);
 
-	weston_pointer_move(grab->pointer, x, y);
+	weston_pointer_move(grab->pointer, event);
 
 	exposay_pick(shell,
 	             wl_fixed_to_int(grab->pointer->x),
@@ -386,6 +388,22 @@ exposay_button(struct weston_pointer_grab *grab, uint32_t time, uint32_t button,
 }
 
 static void
+exposay_axis(struct weston_pointer_grab *grab,
+	     uint32_t time, struct weston_pointer_axis_event *event)
+{
+}
+
+static void
+exposay_axis_source(struct weston_pointer_grab *grab, uint32_t source)
+{
+}
+
+static void
+exposay_frame(struct weston_pointer_grab *grab)
+{
+}
+
+static void
 exposay_pointer_grab_cancel(struct weston_pointer_grab *grab)
 {
 	struct desktop_shell *shell =
@@ -398,6 +416,9 @@ static const struct weston_pointer_grab_interface exposay_ptr_grab = {
 	exposay_focus,
 	exposay_motion,
 	exposay_button,
+	exposay_axis,
+	exposay_axis_source,
+	exposay_frame,
 	exposay_pointer_grab_cancel,
 };
 
@@ -551,11 +572,13 @@ exposay_transition_inactive(struct desktop_shell *shell, int switch_focus)
 	 * animating back the old state and then immediately transitioning
 	 * to the new. */
 	if (switch_focus && shell->exposay.focus_current)
-		activate(shell, shell->exposay.focus_current->surface,
-		         shell->exposay.seat, true);
+		activate(shell, shell->exposay.focus_current,
+		         shell->exposay.seat,
+			 WESTON_ACTIVATE_FLAG_CONFIGURE);
 	else if (shell->exposay.focus_prev)
-		activate(shell, shell->exposay.focus_prev->surface,
-		         shell->exposay.seat, true);
+		activate(shell, shell->exposay.focus_prev,
+		         shell->exposay.seat,
+			 WESTON_ACTIVATE_FLAG_CONFIGURE);
 
 	wl_list_for_each(esurface, &shell->exposay.surface_list, link)
 		exposay_animate_out(esurface);

@@ -33,8 +33,10 @@
 
 #include "config.h"
 
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdbool.h>
 
 #include <cairo.h>
 
@@ -93,6 +95,8 @@ struct eventdemo {
 	struct display *display;
 
 	int x, y, w, h;
+
+	bool print_pointer_frame;
 };
 
 /**
@@ -203,7 +207,7 @@ key_handler(struct window *window, struct input *input, uint32_t time,
 	if (!log_key)
 		return;
 
-	printf("key key: %d, unicode: %d, state: %s, modifiers: 0x%x\n",
+	printf("key key: %u, unicode: %u, state: %s, modifiers: 0x%x\n",
 	       key, unicode,
 	       (state == WL_KEYBOARD_KEY_STATE_PRESSED) ? "pressed" :
 							  "released",
@@ -223,13 +227,16 @@ static void
 button_handler(struct widget *widget, struct input *input, uint32_t time,
 	       uint32_t button, enum wl_pointer_button_state state, void *data)
 {
+	struct eventdemo *e = data;
 	int32_t x, y;
 
 	if (!log_button)
 		return;
 
+	e->print_pointer_frame = true;
+
 	input_get_position(input, &x, &y);
-	printf("button time: %d, button: %d, state: %s, x: %d, y: %d\n",
+	printf("button time: %u, button: %u, state: %s, x: %d, y: %d\n",
 	       time, button,
 	       (state == WL_POINTER_BUTTON_STATE_PRESSED) ? "pressed" :
 							    "released",
@@ -249,14 +256,90 @@ static void
 axis_handler(struct widget *widget, struct input *input, uint32_t time,
 	     uint32_t axis, wl_fixed_t value, void *data)
 {
+	struct eventdemo *e = data;
+
 	if (!log_axis)
 		return;
 
-	printf("axis time: %d, axis: %s, value: %f\n",
+	e->print_pointer_frame = true;
+
+	printf("axis time: %u, axis: %s, value: %f\n",
 	       time,
 	       axis == WL_POINTER_AXIS_VERTICAL_SCROLL ? "vertical" :
 							 "horizontal",
 	       wl_fixed_to_double(value));
+}
+
+static void
+pointer_frame_handler(struct widget *widget, struct input *input, void *data)
+{
+	struct eventdemo *e = data;
+
+	if (!e->print_pointer_frame)
+		return;
+
+	printf("pointer frame\n");
+	e->print_pointer_frame = false;
+}
+
+static void
+axis_source_handler(struct widget *widget, struct input *input,
+		    uint32_t source, void *data)
+{
+	const char *axis_source;
+	struct eventdemo *e = data;
+
+	if (!log_axis)
+		return;
+
+	e->print_pointer_frame = true;
+
+	switch (source) {
+	case WL_POINTER_AXIS_SOURCE_WHEEL:
+		axis_source = "wheel";
+		break;
+	case WL_POINTER_AXIS_SOURCE_FINGER:
+		axis_source = "finger";
+		break;
+	case WL_POINTER_AXIS_SOURCE_CONTINUOUS:
+		axis_source = "continuous";
+		break;
+	default:
+		axis_source = "<invalid source value>";
+		break;
+	}
+
+	printf("axis source: %s\n", axis_source);
+}
+
+static void
+axis_stop_handler(struct widget *widget, struct input *input,
+		  uint32_t time, uint32_t axis,
+		  void *data)
+{
+	struct eventdemo *e = data;
+
+	if (!log_axis)
+		return;
+
+	e->print_pointer_frame = true;
+	printf("axis stop time: %u, axis: %s\n",
+	       time,
+	       axis == WL_POINTER_AXIS_VERTICAL_SCROLL ? "vertical" :
+							 "horizontal");
+}
+
+static void
+axis_discrete_handler(struct widget *widget, struct input *input,
+		      uint32_t axis, int32_t discrete, void *data)
+{
+	struct eventdemo *e = data;
+
+	if (!log_axis)
+		return;
+
+	e->print_pointer_frame = true;
+	printf("axis discrete axis: %u value: %d\n", axis, discrete);
 }
 
 /**
@@ -279,7 +362,8 @@ motion_handler(struct widget *widget, struct input *input, uint32_t time,
 	struct eventdemo *e = data;
 
 	if (log_motion) {
-		printf("motion time: %d, x: %f, y: %f\n", time, x, y);
+		printf("motion time: %u, x: %f, y: %f\n", time, x, y);
+		e->print_pointer_frame = true;
 	}
 
 	if (x > e->x && x < e->x + e->w)
@@ -299,7 +383,7 @@ eventdemo_create(struct display *d)
 {
 	struct eventdemo *e;
 
-	e = malloc(sizeof (struct eventdemo));
+	e = zalloc(sizeof (struct eventdemo));
 	if (e == NULL)
 		return NULL;
 
@@ -347,8 +431,15 @@ eventdemo_create(struct display *d)
 	/* Set the callback motion handler for the window */
 	widget_set_motion_handler(e->widget, motion_handler);
 
+	/* Set the callback pointer frame handler for the window */
+	widget_set_pointer_frame_handler(e->widget, pointer_frame_handler);
+
 	/* Set the callback axis handler for the window */
-	widget_set_axis_handler(e->widget, axis_handler);
+	widget_set_axis_handlers(e->widget,
+				 axis_handler,
+				 axis_source_handler,
+				 axis_stop_handler,
+				 axis_discrete_handler);
 
 	/* Initial drawing of the window */
 	window_schedule_resize(e->window, width, height);
