@@ -42,6 +42,7 @@
 #include "shared/config-parser.h"
 #include "shared/helpers.h"
 #include "libweston-desktop/libweston-desktop.h"
+#include "libweston-desktop/internal.h"
 
 #define DEFAULT_NUM_WORKSPACES 1
 #define DEFAULT_WORKSPACE_CHANGE_ANIMATION_LENGTH 200
@@ -2541,6 +2542,22 @@ desktop_surface_committed(struct weston_desktop_surface *desktop_surface,
 }
 
 static void
+set_window_geometry(struct shell_surface *shsurf,
+	       int32_t x, int32_t y, int32_t width, int32_t height)
+{
+	struct weston_desktop_surface *desktop_surface = shsurf->desktop_surface;
+	struct weston_geometry geometry;
+
+	/*weston_log("%s:%d x:%d, y:%d, w:%d, h:%d\n", __func__, __LINE__, x, y, width, height);*/
+
+	geometry.x = x;
+	geometry.y = y;
+	geometry.width = width;
+	geometry.height = height;
+	weston_desktop_surface_set_geometry(desktop_surface, geometry);
+}
+
+static void
 set_fullscreen(struct shell_surface *shsurf, bool fullscreen,
 	       struct weston_output *output)
 {
@@ -2622,6 +2639,17 @@ desktop_surface_resize(struct weston_desktop_surface *desktop_surface,
 
 	if (surface_resize(shsurf, pointer, edges) < 0)
 		wl_resource_post_no_memory(resource);
+}
+
+static void
+desktop_surface_set_window_geometry_requested(struct weston_desktop_surface *desktop_surface,
+				     int32_t x, int32_t y,
+					 int32_t width, int32_t height, void *shell)
+{
+	struct shell_surface *shsurf =
+		weston_desktop_surface_get_user_data(desktop_surface);
+
+	set_window_geometry(shsurf, x, y, width, height);
 }
 
 static void
@@ -2800,6 +2828,7 @@ static const struct weston_desktop_api shell_desktop_api = {
 	.committed = desktop_surface_committed,
 	.move = desktop_surface_move,
 	.resize = desktop_surface_resize,
+	.set_window_geometry_requested = desktop_surface_set_window_geometry_requested,
 	.fullscreen_requested = desktop_surface_fullscreen_requested,
 	.maximized_requested = desktop_surface_maximized_requested,
 	.minimized_requested = desktop_surface_minimized_requested,
@@ -4040,6 +4069,8 @@ weston_view_set_initial_position(struct weston_view *view,
 	struct weston_output *output, *target_output = NULL;
 	struct weston_seat *seat;
 	pixman_rectangle32_t area;
+	struct shell_surface *shsurf = get_shell_surface(view->surface);
+	struct weston_geometry geometry;
 
 	/* As a heuristic place the new window on the same output as the
 	 * pointer. Falling back to the output containing 0, 0.
@@ -4080,11 +4111,20 @@ weston_view_set_initial_position(struct weston_view *view,
 	range_x = area.width - view->surface->width;
 	range_y = area.height - view->surface->height;
 
-	if (range_x > 0)
-		x += random() % range_x;
+	/*if (range_x > 0)*/
+		/*x += random() % range_x;*/
 
-	if (range_y > 0)
-		y += random() % range_y;
+	/*if (range_y > 0)*/
+		/*y += random() % range_y;*/
+
+	/* Support for setGeometry function.
+	 * TODO:If not set, all of clients will be at 0,0
+	 */
+	geometry = weston_desktop_surface_get_geometry(shsurf->desktop_surface);
+	x = geometry.x;
+	y = geometry.y;
+
+	/*weston_log("%s x:%d, y:%d\n", __func__, x, y);*/
 
 	weston_view_set_position(view, x, y);
 }

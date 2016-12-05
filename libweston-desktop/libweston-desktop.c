@@ -215,6 +215,17 @@ weston_desktop_api_resize(struct weston_desktop *desktop,
 }
 
 void
+weston_desktop_api_set_window_geometry_requested(struct weston_desktop *desktop,
+					struct weston_desktop_surface *surface,
+					int32_t x, int32_t y,
+					int32_t width, int32_t height)
+{
+	if (desktop->api.set_window_geometry_requested != NULL)
+		desktop->api.set_window_geometry_requested(surface, x, y,
+						  width, height, desktop->user_data);
+}
+
+void
 weston_desktop_api_fullscreen_requested(struct weston_desktop *desktop,
 					struct weston_desktop_surface *surface,
 					bool fullscreen,

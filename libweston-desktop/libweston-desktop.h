@@ -72,6 +72,10 @@ struct weston_desktop_api {
 	void (*resize)(struct weston_desktop_surface *surface,
 		       struct weston_seat *seat, uint32_t serial,
 		       enum weston_desktop_surface_edge edges, void *user_data);
+	void (*set_window_geometry_requested)(struct weston_desktop_surface *surface,
+                                             int32_t x, int32_t y,
+                                             int32_t width, int32_t height,
+                                             void *user_data);
 	void (*fullscreen_requested)(struct weston_desktop_surface *surface,
 				     bool fullscreen,
 				     struct weston_output *output,
