@@ -23,6 +23,7 @@
 #include "config.h"
 
 #include <assert.h>
+#include <drm_fourcc.h>
 #include <stdint.h>
 #include <unistd.h>
 #include <sys/types.h>
@@ -30,6 +31,17 @@
 #include "compositor.h"
 #include "linux-dmabuf.h"
 #include "linux-dmabuf-unstable-v1-server-protocol.h"
+#include "shared/helpers.h"
+
+uint32_t dmabuf_formats[] = {
+	DRM_FORMAT_ARGB8888,
+	DRM_FORMAT_XRGB8888,
+	DRM_FORMAT_RGB565,
+	DRM_FORMAT_YUYV,
+	DRM_FORMAT_NV12,
+	DRM_FORMAT_YUV420,
+	DRM_FORMAT_YUV444,
+};
 
 static void
 linux_dmabuf_buffer_destroy(struct linux_dmabuf_buffer *buffer)
@@ -423,6 +435,7 @@ bind_linux_dmabuf(struct wl_client *client,
 {
 	struct weston_compositor *compositor = data;
 	struct wl_resource *resource;
+	unsigned int i;
 
 	resource = wl_resource_create(client, &zwp_linux_dmabuf_v1_interface,
 				      version, id);
@@ -434,9 +447,8 @@ bind_linux_dmabuf(struct wl_client *client,
 	wl_resource_set_implementation(resource, &linux_dmabuf_implementation,
 				       compositor, NULL);
 
-	/* EGL_EXT_image_dma_buf_import does not provide a way to query the
-	 * supported pixel formats. */
-	/* XXX: send formats */
+	for (i = 0; i < ARRAY_LENGTH(dmabuf_formats); i++)
+		zwp_linux_dmabuf_v1_send_format(resource, dmabuf_formats[i]);
 }
 
 /** Advertise linux_dmabuf support
