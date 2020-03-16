@@ -3218,7 +3218,7 @@ drm_backend_create(struct weston_compositor *compositor,
 	b->compositor = compositor;
 	b->use_pixman = config->use_pixman;
 
-	if (parse_gbm_format(config->gbm_format, GBM_FORMAT_XRGB8888, &b->gbm_format) < 0)
+	if (parse_gbm_format(config->gbm_format, GBM_FORMAT_ARGB8888, &b->gbm_format) < 0)
 		goto err_compositor;
 
 	if (config->seat_id)
