@@ -2024,12 +2024,12 @@ gl_renderer_attach(struct weston_surface *es, struct weston_buffer *buffer)
 
 	if (shm_buffer)
 		gl_renderer_attach_shm(es, buffer, shm_buffer);
+	else if ((dmabuf = linux_dmabuf_buffer_get(buffer->resource)))
+		gl_renderer_attach_dmabuf(es, buffer, dmabuf);
 	else if (gr->has_bind_display &&
 		 gr->query_buffer(gr->egl_display, (void *)buffer->resource,
 				  EGL_TEXTURE_FORMAT, &format))
 		gl_renderer_attach_egl(es, buffer, format);
-	else if ((dmabuf = linux_dmabuf_buffer_get(buffer->resource)))
-		gl_renderer_attach_dmabuf(es, buffer, dmabuf);
 	else {
 		weston_log("unhandled buffer type!\n");
 		weston_buffer_reference(&gs->buffer_ref, NULL);
