@@ -710,7 +710,7 @@ weston_desktop_surface_set_pid(struct weston_desktop_surface *surface,
 	surface->pid = pid;
 }
 
-void
+WL_EXPORT void
 weston_desktop_surface_set_geometry(struct weston_desktop_surface *surface,
 				    struct weston_geometry geometry)
 {

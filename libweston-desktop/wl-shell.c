@@ -289,6 +289,21 @@ weston_desktop_wl_shell_surface_protocol_set_transient(struct wl_client *wl_clie
 }
 
 static void
+weston_desktop_wl_shell_surface_protocol_set_window_geometry(struct wl_client *wl_client,
+							     struct wl_resource *resource,
+							     int32_t x, int32_t y,
+							     int32_t width, int32_t height)
+{
+       struct weston_desktop_surface *dsurface =
+               wl_resource_get_user_data(resource);
+       struct weston_desktop_wl_shell_surface *surface =
+               weston_desktop_surface_get_implementation_data(dsurface);
+
+       weston_desktop_api_set_window_geometry_requested(surface->desktop, dsurface,
+                                               x, y, width, height);
+}
+
+static void
 weston_desktop_wl_shell_surface_protocol_set_fullscreen(struct wl_client *wl_client,
 							struct wl_resource *resource,
 							enum wl_shell_surface_fullscreen_method method,
@@ -387,6 +402,7 @@ static const struct wl_shell_surface_interface weston_desktop_wl_shell_surface_i
 	.resize         = weston_desktop_wl_shell_surface_protocol_resize,
 	.set_toplevel   = weston_desktop_wl_shell_surface_protocol_set_toplevel,
 	.set_transient  = weston_desktop_wl_shell_surface_protocol_set_transient,
+	.set_window_geometry = weston_desktop_wl_shell_surface_protocol_set_window_geometry,
 	.set_fullscreen = weston_desktop_wl_shell_surface_protocol_set_fullscreen,
 	.set_popup      = weston_desktop_wl_shell_surface_protocol_set_popup,
 	.set_maximized  = weston_desktop_wl_shell_surface_protocol_set_maximized,
