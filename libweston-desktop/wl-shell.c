@@ -56,6 +56,7 @@ struct weston_desktop_wl_shell_surface {
 	bool added;
 	struct weston_desktop_seat *popup_seat;
 	enum weston_desktop_wl_shell_surface_state state;
+	struct wl_listener wl_surface_resource_destroy_listener;
 };
 
 static void
@@ -69,6 +70,7 @@ weston_desktop_wl_shell_surface_set_size(struct weston_desktop_surface *dsurface
 
 	if ((wsurface->width == width && wsurface->height == height) ||
 	    (width == 0 && height == 0))
+		return;
 
 	wl_shell_surface_send_configure(surface->resource,
 					WL_SHELL_SURFACE_RESIZE_NONE,
@@ -184,6 +186,8 @@ weston_desktop_wl_shell_surface_destroy(struct weston_desktop_surface *dsurface,
 {
 	struct weston_desktop_wl_shell_surface *surface = user_data;
 
+	wl_list_remove(&surface->wl_surface_resource_destroy_listener.link);
+
 	weston_desktop_wl_shell_surface_maybe_ungrab(surface);
 	weston_desktop_surface_unset_relative_to(surface->surface);
 	if (surface->added)
@@ -231,8 +235,10 @@ weston_desktop_wl_shell_surface_protocol_resize(struct wl_client *wl_client,
 	struct weston_seat *seat = wl_resource_get_user_data(seat_resource);
 	struct weston_desktop_wl_shell_surface *surface =
 		weston_desktop_surface_get_implementation_data(dsurface);
+	enum weston_desktop_surface_edge surf_edges =
+		(enum weston_desktop_surface_edge) edges;
 
-	weston_desktop_api_resize(surface->desktop, dsurface, seat, serial, edges);
+	weston_desktop_api_resize(surface->desktop, dsurface, seat, serial, surf_edges);
 }
 
 static void
@@ -401,6 +407,19 @@ static const struct weston_desktop_surface_implementation weston_desktop_wl_shel
 };
 
 static void
+wl_surface_resource_destroyed(struct wl_listener *listener,
+					     void *data)
+{
+	struct weston_desktop_wl_shell_surface *surface =
+		wl_container_of(listener, surface,
+				wl_surface_resource_destroy_listener);
+
+	/* the wl_shell_surface spec says that wl_shell_surfaces are to be
+	 * destroyed automatically when the wl_surface is destroyed. */
+	weston_desktop_surface_destroy(surface->surface);
+}
+
+static void
 weston_desktop_wl_shell_protocol_get_shell_surface(struct wl_client *wl_client,
 						   struct wl_resource *resource,
 						   uint32_t id,
@@ -431,6 +450,11 @@ weston_desktop_wl_shell_protocol_get_shell_surface(struct wl_client *wl_client,
 		free(surface);
 		return;
 	}
+
+	surface->wl_surface_resource_destroy_listener.notify =
+		wl_surface_resource_destroyed;
+	wl_resource_add_destroy_listener(wsurface->resource,
+					 &surface->wl_surface_resource_destroy_listener);
 
 	surface->resource =
 		weston_desktop_surface_add_resource(surface->surface,

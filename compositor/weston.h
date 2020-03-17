@@ -61,10 +61,32 @@ struct weston_config *
 wet_get_config(struct weston_compositor *compositor);
 
 void *
-wet_load_module(const char *name, const char *entrypoint);
+wet_load_module_entrypoint(const char *name, const char *entrypoint);
+
+int
+wet_shell_init(struct weston_compositor *ec,
+	       int *argc, char *argv[]);
+int
+wet_module_init(struct weston_compositor *ec,
+		int *argc, char *argv[]);
+int
+wet_load_module(struct weston_compositor *compositor,
+	        const char *name, int *argc, char *argv[]);
+
+int
+module_init(struct weston_compositor *compositor,
+	    int *argc, char *argv[]);
 
 int
 wet_load_xwayland(struct weston_compositor *comp);
+
+struct text_backend;
+
+struct text_backend *
+text_backend_init(struct weston_compositor *ec);
+
+void
+text_backend_destroy(struct text_backend *text_backend);
 
 #ifdef  __cplusplus
 }

@@ -34,6 +34,7 @@
 #include <colord.h>
 
 #include "compositor.h"
+#include "weston.h"
 #include "cms-helper.h"
 #include "shared/helpers.h"
 
@@ -495,8 +496,8 @@ colord_cms_output_destroy(gpointer data)
 }
 
 WL_EXPORT int
-module_init(struct weston_compositor *ec,
-	    int *argc, char *argv[])
+wet_module_init(struct weston_compositor *ec,
+		int *argc, char *argv[])
 {
 	gboolean ret;
 	GError *error = NULL;

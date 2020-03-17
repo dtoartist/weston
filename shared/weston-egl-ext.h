@@ -28,6 +28,8 @@
 #ifndef WESTON_EGL_EXT_H
 #define WESTON_EGL_EXT_H
 
+#ifdef ENABLE_EGL
+
 #ifndef EGL_WL_bind_wayland_display
 #define EGL_WL_bind_wayland_display 1
 
@@ -133,6 +135,10 @@ typedef EGLBoolean (EGLAPIENTRYP PFNEGLSWAPBUFFERSWITHDAMAGEEXTPROC) (EGLDisplay
 #define EGL_NO_CONFIG_MESA                      ((EGLConfig)0)
 #endif
 
+#ifndef EGL_NO_CONFIG_KHR
+#define EGL_NO_CONFIG_KHR ((EGLConfig)0)
+#endif
+
 #ifndef EGL_EXT_platform_base
 #define EGL_EXT_platform_base 1
 typedef EGLDisplay (EGLAPIENTRYP PFNEGLGETPLATFORMDISPLAYEXTPROC) (EGLenum platform, void *native_display, const EGLint *attrib_list);
@@ -152,5 +158,13 @@ typedef EGLSurface (EGLAPIENTRYP PFNEGLCREATEPLATFORMPIXMAPSURFACEEXTPROC) (EGLD
 #define EGL_PLATFORM_X11_KHR 0x31D5
 #endif
 
+#else /* ENABLE_EGL */
+
+/* EGL platform definition are keept to allow compositor-xx.c to build */
+#define EGL_PLATFORM_GBM_KHR     0x31D7
+#define EGL_PLATFORM_WAYLAND_KHR 0x31D8
+#define EGL_PLATFORM_X11_KHR     0x31D5
+
+#endif /* ENABLE_EGL */
 
 #endif

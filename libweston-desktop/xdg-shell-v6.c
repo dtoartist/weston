@@ -33,7 +33,7 @@
 
 #include "compositor.h"
 #include "zalloc.h"
-#include "protocol/xdg-shell-unstable-v6-server-protocol.h"
+#include "xdg-shell-unstable-v6-server-protocol.h"
 
 #include "libweston-desktop.h"
 #include "internal.h"
@@ -396,6 +396,8 @@ weston_desktop_xdg_toplevel_protocol_resize(struct wl_client *wl_client,
 		wl_resource_get_user_data(seat_resource);
 	struct weston_desktop_xdg_toplevel *toplevel =
 		weston_desktop_surface_get_implementation_data(dsurface);
+	enum weston_desktop_surface_edge surf_edges =
+		(enum weston_desktop_surface_edge) edges;
 
 	if (!toplevel->base.configured) {
 		wl_resource_post_error(toplevel->resource,
@@ -405,7 +407,7 @@ weston_desktop_xdg_toplevel_protocol_resize(struct wl_client *wl_client,
 	}
 
 	weston_desktop_api_resize(toplevel->base.desktop,
-				  dsurface, seat, serial, edges);
+				  dsurface, seat, serial, surf_edges);
 }
 
 static void
@@ -928,6 +930,15 @@ weston_desktop_xdg_surface_protocol_get_popup(struct wl_client *wl_client,
 		weston_desktop_surface_get_implementation_data(parent_surface);
 	struct weston_desktop_xdg_positioner *positioner =
 		wl_resource_get_user_data(positioner_resource);
+
+	/* Checking whether the size and anchor rect both have a positive size
+	 * is enough to verify both have been correctly set */
+	if (positioner->size.width == 0 || positioner->anchor_rect.width == 0) {
+		wl_resource_post_error(resource,
+				       ZXDG_SHELL_V6_ERROR_INVALID_POSITIONER,
+				       "positioner object is not complete");
+		return;
+	}
 
 	if (weston_surface_set_role(wsurface, weston_desktop_xdg_popup_role,
 				    resource, ZXDG_SHELL_V6_ERROR_ROLE) < 0)

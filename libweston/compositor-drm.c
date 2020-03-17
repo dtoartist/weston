@@ -52,6 +52,7 @@
 #include "shared/helpers.h"
 #include "shared/timespec-util.h"
 #include "gl-renderer.h"
+#include "weston-egl-ext.h"
 #include "pixman-renderer.h"
 #include "libbacklight.h"
 #include "libinput-seat.h"
@@ -59,6 +60,7 @@
 #include "vaapi-recorder.h"
 #include "presentation-time-server-protocol.h"
 #include "linux-dmabuf.h"
+#include "linux-dmabuf-unstable-v1-server-protocol.h"
 
 #ifndef DRM_CAP_TIMESTAMP_MONOTONIC
 #define DRM_CAP_TIMESTAMP_MONOTONIC 0x6
@@ -92,10 +94,6 @@ struct drm_backend {
 		char *filename;
 	} drm;
 	struct gbm_device *gbm;
-	uint32_t *crtcs;
-	int num_crtcs;
-	uint32_t crtc_allocator;
-	uint32_t connector_allocator;
 	struct wl_listener session_listener;
 	uint32_t gbm_format;
 
@@ -103,8 +101,8 @@ struct drm_backend {
 	 * due to out of bounds dimensions, and then mistakenly set
 	 * sprites_are_broken:
 	 */
-	uint32_t min_width, max_width;
-	uint32_t min_height, max_height;
+	int min_width, max_width;
+	int min_height, max_height;
 	int no_addfb2;
 
 	struct wl_list sprite_list;
@@ -115,24 +113,12 @@ struct drm_backend {
 
 	int use_pixman;
 
-	uint32_t prev_state;
-
 	struct udev_input input;
 
 	int32_t cursor_width;
 	int32_t cursor_height;
 
-        /** Callback used to configure the outputs.
-	 *
-         * This function will be called by the backend when a new DRM
-         * output needs to be configured.
-         */
-        enum weston_drm_backend_output_mode
-	(*configure_output)(struct weston_compositor *compositor,
-			    bool use_current_mode,
-			    const char *name,
-			    struct weston_drm_backend_output_config *output_config);
-	bool use_current_mode;
+	uint32_t connector;
 };
 
 struct drm_mode {
@@ -142,6 +128,7 @@ struct drm_mode {
 
 struct drm_fb {
 	uint32_t fb_id, stride, handle, size;
+	int width, height;
 	int fd;
 	int is_client_buffer;
 	struct weston_buffer_reference buffer_ref;
@@ -161,10 +148,11 @@ struct drm_edid {
 };
 
 struct drm_output {
-	struct weston_output   base;
+	struct weston_output base;
+	drmModeConnector *connector;
 
-	uint32_t crtc_id;
-	int pipe;
+	uint32_t crtc_id; /* object ID to pass to DRM functions */
+	int pipe; /* index of CRTC in resource array / bitmasks */
 	uint32_t connector_id;
 	drmModeCrtcPtr original_crtc;
 	struct drm_edid edid;
@@ -176,6 +164,7 @@ struct drm_output {
 	int vblank_pending;
 	int page_flip_pending;
 	int destroy_pending;
+	int disable_pending;
 
 	struct gbm_surface *gbm_surface;
 	struct gbm_bo *gbm_cursor_bo[2];
@@ -243,31 +232,56 @@ static void
 drm_output_update_msc(struct drm_output *output, unsigned int seq);
 
 static int
-drm_sprite_crtc_supported(struct drm_output *output, uint32_t supported)
+drm_sprite_crtc_supported(struct drm_output *output, struct drm_sprite *sprite)
 {
-	struct weston_compositor *ec = output->base.compositor;
-	struct drm_backend *b = to_drm_backend(ec);
-	int crtc;
+	return !!(sprite->possible_crtcs & (1 << output->pipe));
+}
 
-	for (crtc = 0; crtc < b->num_crtcs; crtc++) {
-		if (b->crtcs[crtc] != output->crtc_id)
-			continue;
+static struct drm_output *
+drm_output_find_by_crtc(struct drm_backend *b, uint32_t crtc_id)
+{
+	struct drm_output *output;
 
-		if (supported & (1 << crtc))
-			return -1;
+	wl_list_for_each(output, &b->compositor->output_list, base.link) {
+		if (output->crtc_id == crtc_id)
+			return output;
 	}
 
-	return 0;
+	wl_list_for_each(output, &b->compositor->pending_output_list,
+			 base.link) {
+		if (output->crtc_id == crtc_id)
+			return output;
+	}
+
+	return NULL;
+}
+
+static struct drm_output *
+drm_output_find_by_connector(struct drm_backend *b, uint32_t connector_id)
+{
+	struct drm_output *output;
+
+	wl_list_for_each(output, &b->compositor->output_list, base.link) {
+		if (output->connector_id == connector_id)
+			return output;
+	}
+
+	wl_list_for_each(output, &b->compositor->pending_output_list,
+			 base.link) {
+		if (output->connector_id == connector_id)
+			return output;
+	}
+
+	return NULL;
 }
 
 static void
 drm_fb_destroy_callback(struct gbm_bo *bo, void *data)
 {
 	struct drm_fb *fb = data;
-	struct gbm_device *gbm = gbm_bo_get_device(bo);
 
 	if (fb->fb_id)
-		drmModeRmFB(gbm_device_get_fd(gbm), fb->fb_id);
+		drmModeRmFB(fb->fd, fb->fb_id);
 
 	weston_buffer_reference(&fb->buffer_ref, NULL);
 
@@ -275,7 +289,7 @@ drm_fb_destroy_callback(struct gbm_bo *bo, void *data)
 }
 
 static struct drm_fb *
-drm_fb_create_dumb(struct drm_backend *b, unsigned width, unsigned height,
+drm_fb_create_dumb(struct drm_backend *b, int width, int height,
 		   uint32_t format)
 {
 	struct drm_fb *fb;
@@ -314,6 +328,8 @@ drm_fb_create_dumb(struct drm_backend *b, unsigned width, unsigned height,
 	fb->handle = create_arg.handle;
 	fb->stride = create_arg.pitch;
 	fb->size = create_arg.size;
+	fb->width = width;
+	fb->height = height;
 	fb->fd = b->drm.fd;
 
 	ret = -1;
@@ -393,7 +409,6 @@ drm_fb_get_from_bo(struct gbm_bo *bo,
 		   struct drm_backend *backend, uint32_t format)
 {
 	struct drm_fb *fb = gbm_bo_get_user_data(bo);
-	uint32_t width, height;
 	uint32_t handles[4] = { 0 }, pitches[4] = { 0 }, offsets[4] = { 0 };
 	int ret;
 
@@ -406,16 +421,17 @@ drm_fb_get_from_bo(struct gbm_bo *bo,
 
 	fb->bo = bo;
 
-	width = gbm_bo_get_width(bo);
-	height = gbm_bo_get_height(bo);
+	fb->width = gbm_bo_get_width(bo);
+	fb->height = gbm_bo_get_height(bo);
 	fb->stride = gbm_bo_get_stride(bo);
 	fb->handle = gbm_bo_get_handle(bo).u32;
-	fb->size = fb->stride * height;
+	fb->size = fb->stride * fb->height;
 	fb->fd = backend->drm.fd;
 
-	if (backend->min_width > width || width > backend->max_width ||
-	    backend->min_height > height ||
-	    height > backend->max_height) {
+	if (backend->min_width > fb->width ||
+	    fb->width > backend->max_width ||
+	    backend->min_height > fb->height ||
+	    fb->height > backend->max_height) {
 		weston_log("bo geometry out of bounds\n");
 		goto err_free;
 	}
@@ -427,7 +443,7 @@ drm_fb_get_from_bo(struct gbm_bo *bo,
 		pitches[0] = fb->stride;
 		offsets[0] = 0;
 
-		ret = drmModeAddFB2(backend->drm.fd, width, height,
+		ret = drmModeAddFB2(backend->drm.fd, fb->width, fb->height,
 				    format, handles, pitches, offsets,
 				    &fb->fb_id, 0);
 		if (ret) {
@@ -438,8 +454,8 @@ drm_fb_get_from_bo(struct gbm_bo *bo,
 	}
 
 	if (ret)
-		ret = drmModeAddFB(backend->drm.fd, width, height, 24, 32,
-				   fb->stride, fb->handle, &fb->fb_id);
+		ret = drmModeAddFB(backend->drm.fd, fb->width, fb->height,
+				   24, 32, fb->stride, fb->handle, &fb->fb_id);
 
 	if (ret) {
 		weston_log("failed to create kms fb: %m\n");
@@ -523,16 +539,26 @@ drm_output_prepare_scanout_view(struct drm_output *output,
 	struct gbm_bo *bo;
 	uint32_t format;
 
-	if (ev->geometry.x != output->base.x ||
-	    ev->geometry.y != output->base.y ||
-	    buffer == NULL || b->gbm == NULL ||
-	    buffer->width != output->base.current_mode->width ||
-	    buffer->height != output->base.current_mode->height ||
-	    output->base.transform != viewport->buffer.transform ||
-	    ev->transform.enabled)
+	/* We use GBM to import buffers. */
+	if (b->gbm == NULL)
 		return NULL;
 
+	if (buffer == NULL)
+		return NULL;
+
+	/* Make sure our view is exactly compatible with the output. */
+	if (ev->geometry.x != output->base.x ||
+	    ev->geometry.y != output->base.y)
+		return NULL;
+	if (ev->transform.enabled)
+		return NULL;
 	if (ev->geometry.scissor_enabled)
+		return NULL;
+
+	if (buffer->width != output->base.current_mode->width ||
+	    buffer->height != output->base.current_mode->height)
+		return NULL;
+	if (viewport->buffer.transform != output->base.transform)
 		return NULL;
 
 	bo = gbm_bo_import(b->gbm, GBM_BO_IMPORT_WL_BUFFER,
@@ -681,7 +707,7 @@ drm_output_repaint(struct weston_output *output_base,
 	struct drm_mode *mode;
 	int ret = 0;
 
-	if (output->destroy_pending)
+	if (output->disable_pending || output->destroy_pending)
 		return -1;
 
 	if (!output->next)
@@ -725,7 +751,7 @@ drm_output_repaint(struct weston_output *output_base,
 		};
 
 		if ((!s->current && !s->next) ||
-		    !drm_sprite_crtc_supported(output, s->possible_crtcs))
+		    !drm_sprite_crtc_supported(output, s))
 			continue;
 
 		if (s->next && !backend->sprites_hidden)
@@ -787,7 +813,7 @@ drm_output_start_repaint_loop(struct weston_output *output_base)
 		.request.signal = 0,
 	};
 
-	if (output->destroy_pending)
+	if (output->disable_pending || output->destroy_pending)
 		return;
 
 	if (!output->current) {
@@ -877,7 +903,7 @@ vblank_handler(int fd, unsigned int frame, unsigned int sec, unsigned int usec,
 }
 
 static void
-drm_output_destroy(struct weston_output *output_base);
+drm_output_destroy(struct weston_output *base);
 
 static void
 page_flip_handler(int fd, unsigned int frame,
@@ -904,6 +930,8 @@ page_flip_handler(int fd, unsigned int frame,
 
 	if (output->destroy_pending)
 		drm_output_destroy(&output->base);
+	else if (output->disable_pending)
+		weston_output_disable(&output->base);
 	else if (!output->vblank_pending) {
 		ts.tv_sec = sec;
 		ts.tv_nsec = usec * 1000;
@@ -969,36 +997,35 @@ drm_output_prepare_overlay_view(struct drm_output *output,
 	uint32_t format;
 	wl_fixed_t sx1, sy1, sx2, sy2;
 
-	if (b->gbm == NULL)
-		return NULL;
-
-	if (viewport->buffer.transform != output->base.transform)
-		return NULL;
-
-	if (viewport->buffer.scale != output->base.current_scale)
-		return NULL;
-
 	if (b->sprites_are_broken)
 		return NULL;
 
+	/* Don't import buffers which span multiple outputs. */
 	if (ev->output_mask != (1u << output->base.id))
+		return NULL;
+
+	/* We can only import GBM buffers. */
+	if (b->gbm == NULL)
 		return NULL;
 
 	if (ev->surface->buffer_ref.buffer == NULL)
 		return NULL;
 	buffer_resource = ev->surface->buffer_ref.buffer->resource;
+	if (wl_shm_buffer_get(buffer_resource))
+		return NULL;
+
+	if (viewport->buffer.transform != output->base.transform)
+		return NULL;
+	if (viewport->buffer.scale != output->base.current_scale)
+		return NULL;
+	if (!drm_view_transform_supported(ev))
+		return NULL;
 
 	if (ev->alpha != 1.0f)
 		return NULL;
 
-	if (wl_shm_buffer_get(buffer_resource))
-		return NULL;
-
-	if (!drm_view_transform_supported(ev))
-		return NULL;
-
 	wl_list_for_each(s, &b->sprite_list, link) {
-		if (!drm_sprite_crtc_supported(output, s->possible_crtcs))
+		if (!drm_sprite_crtc_supported(output, s))
 			continue;
 
 		if (!s->next) {
@@ -1028,7 +1055,18 @@ drm_output_prepare_overlay_view(struct drm_output *output,
 			.format = dmabuf->attributes.format
 		};
 
-		if (dmabuf->attributes.n_planes != 1 || dmabuf->attributes.offset[0] != 0)
+                /* XXX: TODO:
+                 *
+                 * Currently the buffer is rejected if any dmabuf attribute
+                 * flag is set.  This keeps us from passing an inverted /
+                 * interlaced / bottom-first buffer (or any other type that may
+                 * be added in the future) through to an overlay.  Ultimately,
+                 * these types of buffers should be handled through buffer
+                 * transforms and not as spot-checks requiring specific
+                 * knowledge. */
+		if (dmabuf->attributes.n_planes != 1 ||
+                    dmabuf->attributes.offset[0] != 0 ||
+		    dmabuf->attributes.flags)
 			return NULL;
 
 		bo = gbm_bo_import(b->gbm, GBM_BO_IMPORT_FD, &gbm_dmabuf,
@@ -1133,23 +1171,20 @@ drm_output_prepare_cursor_view(struct drm_output *output,
 	struct weston_buffer_viewport *viewport = &ev->surface->buffer_viewport;
 	struct wl_shm_buffer *shmbuf;
 
-	if (ev->transform.enabled &&
-	    (ev->transform.matrix.type > WESTON_MATRIX_TRANSFORM_TRANSLATE))
-		return NULL;
-	if (b->gbm == NULL)
-		return NULL;
-	if (output->base.transform != WL_OUTPUT_TRANSFORM_NORMAL)
-		return NULL;
-	if (viewport->buffer.scale != output->base.current_scale)
-		return NULL;
-	if (output->cursor_view)
-		return NULL;
-	if (ev->output_mask != (1u << output->base.id))
-		return NULL;
 	if (b->cursors_are_broken)
 		return NULL;
-	if (ev->geometry.scissor_enabled)
+
+	if (output->cursor_view)
 		return NULL;
+
+	/* Don't import buffers which span multiple outputs. */
+	if (ev->output_mask != (1u << output->base.id))
+		return NULL;
+
+	/* We use GBM to import SHM buffers. */
+	if (b->gbm == NULL)
+		return NULL;
+
 	if (ev->surface->buffer_ref.buffer == NULL)
 		return NULL;
 	shmbuf = wl_shm_buffer_get(ev->surface->buffer_ref.buffer->resource);
@@ -1157,6 +1192,17 @@ drm_output_prepare_cursor_view(struct drm_output *output,
 		return NULL;
 	if (wl_shm_buffer_get_format(shmbuf) != WL_SHM_FORMAT_ARGB8888)
 		return NULL;
+
+	if (output->base.transform != WL_OUTPUT_TRANSFORM_NORMAL)
+		return NULL;
+	if (ev->transform.enabled &&
+	    (ev->transform.matrix.type > WESTON_MATRIX_TRANSFORM_TRANSLATE))
+		return NULL;
+	if (viewport->buffer.scale != output->base.current_scale)
+		return NULL;
+	if (ev->geometry.scissor_enabled)
+		return NULL;
+
 	if (ev->surface->width > b->cursor_width ||
 	    ev->surface->height > b->cursor_height)
 		return NULL;
@@ -1341,54 +1387,6 @@ drm_assign_planes(struct weston_output *output_base)
 	pixman_region32_fini(&overlap);
 }
 
-static void
-drm_output_fini_pixman(struct drm_output *output);
-
-static void
-drm_output_destroy(struct weston_output *output_base)
-{
-	struct drm_output *output = to_drm_output(output_base);
-	struct drm_backend *b = to_drm_backend(output->base.compositor);
-	drmModeCrtcPtr origcrtc = output->original_crtc;
-
-	if (output->page_flip_pending) {
-		output->destroy_pending = 1;
-		weston_log("destroy output while page flip pending\n");
-		return;
-	}
-
-	if (output->backlight)
-		backlight_destroy(output->backlight);
-
-	drmModeFreeProperty(output->dpms_prop);
-
-	/* Turn off hardware cursor */
-	drmModeSetCursor(b->drm.fd, output->crtc_id, 0, 0, 0);
-
-	/* Restore original CRTC state */
-	drmModeSetCrtc(b->drm.fd, origcrtc->crtc_id, origcrtc->buffer_id,
-		       origcrtc->x, origcrtc->y,
-		       &output->connector_id, 1, &origcrtc->mode);
-	drmModeFreeCrtc(origcrtc);
-
-	b->crtc_allocator &= ~(1 << output->crtc_id);
-	b->connector_allocator &= ~(1 << output->connector_id);
-
-	if (b->use_pixman) {
-		drm_output_fini_pixman(output);
-	} else {
-		gl_renderer->output_destroy(output_base);
-		gbm_surface_destroy(output->gbm_surface);
-	}
-
-	weston_plane_release(&output->fb_plane);
-	weston_plane_release(&output->cursor_plane);
-
-	weston_output_destroy(&output->base);
-
-	free(output);
-}
-
 /**
  * Find the closest-matching mode for a given target
  *
@@ -1427,8 +1425,12 @@ choose_mode (struct drm_output *output, struct weston_mode *target_mode)
 
 static int
 drm_output_init_egl(struct drm_output *output, struct drm_backend *b);
+static void
+drm_output_fini_egl(struct drm_output *output);
 static int
 drm_output_init_pixman(struct drm_output *output, struct drm_backend *b);
+static void
+drm_output_fini_pixman(struct drm_output *output);
 
 static int
 drm_output_switch_mode(struct weston_output *output_base, struct weston_mode *mode)
@@ -1478,9 +1480,7 @@ drm_output_switch_mode(struct weston_output *output_base, struct weston_mode *mo
 			return -1;
 		}
 	} else {
-		gl_renderer->output_destroy(&output->base);
-		gbm_surface_destroy(output->gbm_surface);
-
+		drm_output_fini_egl(output);
 		if (drm_output_init_egl(output, b) < 0) {
 			weston_log("failed to init output egl state with "
 				   "new mode");
@@ -1619,12 +1619,13 @@ drm_backend_create_gl_renderer(struct drm_backend *b)
 
 	if (format[1])
 		n_formats = 3;
-	if (gl_renderer->create(b->compositor,
-				EGL_PLATFORM_GBM_KHR,
-				(void *)b->gbm,
-				gl_renderer->opaque_attribs,
-				format,
-				n_formats) < 0) {
+	if (gl_renderer->display_create(b->compositor,
+					EGL_PLATFORM_GBM_KHR,
+					(void *)b->gbm,
+					NULL,
+					gl_renderer->opaque_attribs,
+					format,
+					n_formats) < 0) {
 		return -1;
 	}
 
@@ -1854,9 +1855,13 @@ find_crtc_for_connector(struct drm_backend *b,
 		drmModeFreeEncoder(encoder);
 
 		for (i = 0; i < resources->count_crtcs; i++) {
-			if (possible_crtcs & (1 << i) &&
-			    !(b->crtc_allocator & (1 << resources->crtcs[i])))
-				return i;
+			if (!(possible_crtcs & (1 << i)))
+				continue;
+
+			if (drm_output_find_by_crtc(b, resources->crtcs[i]))
+				continue;
+
+			return i;
 		}
 	}
 
@@ -1886,12 +1891,12 @@ drm_output_init_egl(struct drm_output *output, struct drm_backend *b)
 
 	if (format[1])
 		n_formats = 2;
-	if (gl_renderer->output_create(&output->base,
-				       (EGLNativeWindowType)output->gbm_surface,
-				       output->gbm_surface,
-				       gl_renderer->opaque_attribs,
-				       format,
-				       n_formats) < 0) {
+	if (gl_renderer->output_window_create(&output->base,
+					      (EGLNativeWindowType)output->gbm_surface,
+					      output->gbm_surface,
+					      gl_renderer->opaque_attribs,
+					      format,
+					      n_formats) < 0) {
 		weston_log("failed to create gl renderer output state\n");
 		gbm_surface_destroy(output->gbm_surface);
 		return -1;
@@ -1914,6 +1919,13 @@ drm_output_init_egl(struct drm_output *output, struct drm_backend *b)
 	}
 
 	return 0;
+}
+
+static void
+drm_output_fini_egl(struct drm_output *output)
+{
+	gl_renderer->output_destroy(&output->base);
+	gbm_surface_destroy(output->gbm_surface);
 }
 
 static int
@@ -2239,7 +2251,7 @@ static struct drm_mode *
 drm_output_choose_initial_mode(struct drm_backend *backend,
 			       struct drm_output *output,
 			       enum weston_drm_backend_output_mode mode,
-			       struct weston_drm_backend_output_config *config,
+			       const char *modeline,
 			       const drmModeModeInfo *current_mode)
 {
 	struct drm_mode *preferred = NULL;
@@ -2247,28 +2259,32 @@ drm_output_choose_initial_mode(struct drm_backend *backend,
 	struct drm_mode *configured = NULL;
 	struct drm_mode *best = NULL;
 	struct drm_mode *drm_mode;
-	drmModeModeInfo modeline;
+	drmModeModeInfo drm_modeline;
 	int32_t width = 0;
 	int32_t height = 0;
+	uint32_t refresh = 0;
+	int n;
 
-	if (mode == WESTON_DRM_BACKEND_OUTPUT_PREFERRED && config->modeline) {
-		if (sscanf(config->modeline, "%dx%d", &width, &height) != 2) {
+	if (mode == WESTON_DRM_BACKEND_OUTPUT_PREFERRED && modeline) {
+		n = sscanf(modeline, "%dx%d@%d", &width, &height, &refresh);
+		if (n != 2 && n != 3) {
 			width = -1;
 
-			if (parse_modeline(config->modeline, &modeline) == 0) {
-				configured = drm_output_add_mode(output, &modeline);
+			if (parse_modeline(modeline, &drm_modeline) == 0) {
+				configured = drm_output_add_mode(output, &drm_modeline);
 				if (!configured)
 					return NULL;
 			} else {
 				weston_log("Invalid modeline \"%s\" for output %s\n",
-					   config->modeline, output->base.name);
+					   modeline, output->base.name);
 			}
 		}
 	}
 
 	wl_list_for_each_reverse(drm_mode, &output->base.mode_list, base.link) {
 		if (width == drm_mode->base.width &&
-		    height == drm_mode->base.height)
+		    height == drm_mode->base.height &&
+		    (refresh == 0 || refresh == drm_mode->mode_info.vrefresh))
 			configured = drm_mode;
 
 		if (memcmp(current_mode, &drm_mode->mode_info,
@@ -2330,109 +2346,104 @@ connector_get_current_mode(drmModeConnector *connector, int drm_fd,
 	return 0;
 }
 
-/**
- * Create and configure a Weston output structure
- *
- * Given a DRM connector, create a matching drm_output structure and add it
- * to Weston's output list.
- *
- * @param b Weston backend structure structure
- * @param resources DRM resources for this device
- * @param connector DRM connector to use for this new output
- * @param x Horizontal offset to use into global co-ordinate space
- * @param y Vertical offset to use into global co-ordinate space
- * @param drm_device udev device pointer
- * @returns 0 on success, or -1 on failure
- */
 static int
-create_output_for_connector(struct drm_backend *b,
-			    drmModeRes *resources,
-			    drmModeConnector *connector,
-			    int x, int y, struct udev_device *drm_device)
+drm_output_set_mode(struct weston_output *base,
+		    enum weston_drm_backend_output_mode mode,
+		    const char *modeline)
 {
-	struct drm_output *output;
-	struct drm_mode *drm_mode, *next, *current;
-	struct weston_mode *m;
+	struct drm_output *output = to_drm_output(base);
+	struct drm_backend *b = to_drm_backend(base->compositor);
 
+	struct drm_mode *drm_mode, *next, *current;
 	drmModeModeInfo crtc_mode;
 	int i;
-	enum weston_drm_backend_output_mode mode;
-	struct weston_drm_backend_output_config config = {{ 0 }};
 
-	i = find_crtc_for_connector(b, resources, connector);
-	if (i < 0) {
-		weston_log("No usable crtc/encoder pair for connector.\n");
-		return -1;
-	}
-
-	output = zalloc(sizeof *output);
-	if (output == NULL)
-		return -1;
-
-	output->base.subpixel = drm_subpixel_to_wayland(connector->subpixel);
-	output->base.name = make_connector_name(connector);
 	output->base.make = "unknown";
 	output->base.model = "unknown";
 	output->base.serial_number = "unknown";
 	wl_list_init(&output->base.mode_list);
 
-	mode = b->configure_output(b->compositor, b->use_current_mode,
-				   output->base.name, &config);
-	if (parse_gbm_format(config.gbm_format, b->gbm_format, &output->gbm_format) == -1)
-		output->gbm_format = b->gbm_format;
-
-	setup_output_seat_constraint(b, &output->base,
-				     config.seat ? config.seat : "");
-	free(config.seat);
-
-	output->crtc_id = resources->crtcs[i];
-	output->pipe = i;
-	b->crtc_allocator |= (1 << output->crtc_id);
-	output->connector_id = connector->connector_id;
-	b->connector_allocator |= (1 << output->connector_id);
-
 	output->original_crtc = drmModeGetCrtc(b->drm.fd, output->crtc_id);
-	output->dpms_prop = drm_get_prop(b->drm.fd, connector, "DPMS");
 
-	if (connector_get_current_mode(connector, b->drm.fd, &crtc_mode) < 0)
+	if (connector_get_current_mode(output->connector, b->drm.fd, &crtc_mode) < 0)
 		goto err_free;
 
-	for (i = 0; i < connector->count_modes; i++) {
-		drm_mode = drm_output_add_mode(output, &connector->modes[i]);
+	for (i = 0; i < output->connector->count_modes; i++) {
+		drm_mode = drm_output_add_mode(output, &output->connector->modes[i]);
 		if (!drm_mode)
 			goto err_free;
 	}
 
-	if (mode == WESTON_DRM_BACKEND_OUTPUT_OFF) {
-		weston_log("Disabling output %s\n", output->base.name);
-		drmModeSetCrtc(b->drm.fd, output->crtc_id,
-			       0, 0, 0, 0, 0, NULL);
-		goto err_free;
-	}
-
-	current = drm_output_choose_initial_mode(b, output, mode, &config,
-						 &crtc_mode);
+	current = drm_output_choose_initial_mode(b, output, mode, modeline, &crtc_mode);
 	if (!current)
 		goto err_free;
+
 	output->base.current_mode = &current->base;
 	output->base.current_mode->flags |= WL_OUTPUT_MODE_CURRENT;
 
-	weston_output_init(&output->base, b->compositor, x, y,
-			   connector->mmWidth, connector->mmHeight,
-			   config.base.transform, config.base.scale);
+	/* Set native_ fields, so weston_output_mode_switch_to_native() works */
+	output->base.native_mode = output->base.current_mode;
+	output->base.native_scale = output->base.current_scale;
+
+	output->base.mm_width = output->connector->mmWidth;
+	output->base.mm_height = output->connector->mmHeight;
+
+	return 0;
+
+err_free:
+	drmModeFreeCrtc(output->original_crtc);
+	output->original_crtc = NULL;
+
+	wl_list_for_each_safe(drm_mode, next, &output->base.mode_list,
+							base.link) {
+		wl_list_remove(&drm_mode->base.link);
+		free(drm_mode);
+	}
+
+	return -1;
+}
+
+static void
+drm_output_set_gbm_format(struct weston_output *base,
+			  const char *gbm_format)
+{
+	struct drm_output *output = to_drm_output(base);
+	struct drm_backend *b = to_drm_backend(base->compositor);
+
+	if (parse_gbm_format(gbm_format, b->gbm_format, &output->gbm_format) == -1)
+		output->gbm_format = b->gbm_format;
+}
+
+static void
+drm_output_set_seat(struct weston_output *base,
+		    const char *seat)
+{
+	struct drm_output *output = to_drm_output(base);
+	struct drm_backend *b = to_drm_backend(base->compositor);
+
+	setup_output_seat_constraint(b, &output->base,
+				     seat ? seat : "");
+}
+
+static int
+drm_output_enable(struct weston_output *base)
+{
+	struct drm_output *output = to_drm_output(base);
+	struct drm_backend *b = to_drm_backend(base->compositor);
+	struct weston_mode *m;
+
+	output->dpms_prop = drm_get_prop(b->drm.fd, output->connector, "DPMS");
 
 	if (b->use_pixman) {
 		if (drm_output_init_pixman(output, b) < 0) {
 			weston_log("Failed to init output pixman state\n");
-			goto err_output;
+			goto err_free;
 		}
 	} else if (drm_output_init_egl(output, b) < 0) {
 		weston_log("Failed to init output gl state\n");
-		goto err_output;
+		goto err_free;
 	}
 
-	output->backlight = backlight_init(drm_device,
-					   connector->connector_type);
 	if (output->backlight) {
 		weston_log("Initialized backlight, device %s\n",
 			   output->backlight->path);
@@ -2442,21 +2453,21 @@ create_output_for_connector(struct drm_backend *b,
 		weston_log("Failed to initialize backlight\n");
 	}
 
-	weston_compositor_add_output(b->compositor, &output->base);
-
-	find_and_parse_output_edid(b, output, connector);
-	if (connector->connector_type == DRM_MODE_CONNECTOR_LVDS)
-		output->base.connection_internal = 1;
-
 	output->base.start_repaint_loop = drm_output_start_repaint_loop;
 	output->base.repaint = drm_output_repaint;
-	output->base.destroy = drm_output_destroy;
 	output->base.assign_planes = drm_assign_planes;
 	output->base.set_dpms = drm_set_dpms;
 	output->base.switch_mode = drm_output_switch_mode;
 
 	output->base.gamma_size = output->original_crtc->gamma_size;
 	output->base.set_gamma = drm_output_set_gamma;
+
+	output->base.subpixel = drm_subpixel_to_wayland(output->connector->subpixel);
+
+	find_and_parse_output_edid(b, output, output->connector);
+	if (output->connector->connector_type == DRM_MODE_CONNECTOR_LVDS ||
+	    output->connector->connector_type == DRM_MODE_CONNECTOR_eDP)
+		output->base.connection_internal = 1;
 
 	weston_plane_init(&output->cursor_plane, b->compositor,
 			  INT32_MIN, INT32_MIN);
@@ -2475,31 +2486,147 @@ create_output_for_connector(struct drm_backend *b,
 				    ", preferred" : "",
 				    m->flags & WL_OUTPUT_MODE_CURRENT ?
 				    ", current" : "",
-				    connector->count_modes == 0 ?
+				    output->connector->count_modes == 0 ?
 				    ", built-in" : "");
-
-	/* Set native_ fields, so weston_output_mode_switch_to_native() works */
-	output->base.native_mode = output->base.current_mode;
-	output->base.native_scale = output->base.current_scale;
 
 	return 0;
 
-err_output:
-	weston_output_destroy(&output->base);
 err_free:
-	wl_list_for_each_safe(drm_mode, next, &output->base.mode_list,
-							base.link) {
-		wl_list_remove(&drm_mode->base.link);
-		free(drm_mode);
-	}
-
-	drmModeFreeCrtc(output->original_crtc);
-	b->crtc_allocator &= ~(1 << output->crtc_id);
-	b->connector_allocator &= ~(1 << output->connector_id);
-	free(output);
-	free(config.modeline);
+	drmModeFreeProperty(output->dpms_prop);
 
 	return -1;
+}
+
+static void
+drm_output_deinit(struct weston_output *base)
+{
+	struct drm_output *output = to_drm_output(base);
+	struct drm_backend *b = to_drm_backend(base->compositor);
+
+	if (b->use_pixman)
+		drm_output_fini_pixman(output);
+	else
+		drm_output_fini_egl(output);
+
+	weston_plane_release(&output->fb_plane);
+	weston_plane_release(&output->cursor_plane);
+
+	drmModeFreeProperty(output->dpms_prop);
+
+	/* Turn off hardware cursor */
+	drmModeSetCursor(b->drm.fd, output->crtc_id, 0, 0, 0);
+}
+
+static void
+drm_output_destroy(struct weston_output *base)
+{
+	struct drm_output *output = to_drm_output(base);
+	struct drm_backend *b = to_drm_backend(base->compositor);
+	drmModeCrtcPtr origcrtc = output->original_crtc;
+
+	if (output->page_flip_pending) {
+		output->destroy_pending = 1;
+		weston_log("destroy output while page flip pending\n");
+		return;
+	}
+
+	if (output->base.enabled)
+		drm_output_deinit(&output->base);
+
+	if (origcrtc) {
+		/* Restore original CRTC state */
+		drmModeSetCrtc(b->drm.fd, origcrtc->crtc_id, origcrtc->buffer_id,
+			       origcrtc->x, origcrtc->y,
+			       &output->connector_id, 1, &origcrtc->mode);
+		drmModeFreeCrtc(origcrtc);
+	}
+
+	weston_output_destroy(&output->base);
+
+	drmModeFreeConnector(output->connector);
+
+	if (output->backlight)
+		backlight_destroy(output->backlight);
+
+	free(output);
+}
+
+static int
+drm_output_disable(struct weston_output *base)
+{
+	struct drm_output *output = to_drm_output(base);
+	struct drm_backend *b = to_drm_backend(base->compositor);
+
+	if (output->page_flip_pending) {
+		output->disable_pending = 1;
+		return -1;
+	}
+
+	if (output->base.enabled)
+		drm_output_deinit(&output->base);
+
+	output->disable_pending = 0;
+
+	weston_log("Disabling output %s\n", output->base.name);
+	drmModeSetCrtc(b->drm.fd, output->crtc_id,
+		       0, 0, 0, 0, 0, NULL);
+
+	return 0;
+}
+
+/**
+ * Create a Weston output structure
+ *
+ * Given a DRM connector, create a matching drm_output structure and add it
+ * to Weston's output list. It also takes ownership of the connector, which
+ * is released when output is destroyed.
+ *
+ * @param b Weston backend structure
+ * @param resources DRM resources for this device
+ * @param connector DRM connector to use for this new output
+ * @param drm_device udev device pointer
+ * @returns 0 on success, or -1 on failure
+ */
+static int
+create_output_for_connector(struct drm_backend *b,
+			    drmModeRes *resources,
+			    drmModeConnector *connector,
+			    struct udev_device *drm_device)
+{
+	struct drm_output *output;
+	int i;
+
+	i = find_crtc_for_connector(b, resources, connector);
+	if (i < 0) {
+		weston_log("No usable crtc/encoder pair for connector.\n");
+		return -1;
+	}
+
+	output = zalloc(sizeof *output);
+	if (output == NULL)
+		return -1;
+
+	output->connector = connector;
+	output->crtc_id = resources->crtcs[i];
+	output->pipe = i;
+	output->connector_id = connector->connector_id;
+
+	output->backlight = backlight_init(drm_device,
+					   connector->connector_type);
+
+	output->base.enable = drm_output_enable;
+	output->base.destroy = drm_output_destroy;
+	output->base.disable = drm_output_disable;
+	output->base.name = make_connector_name(connector);
+
+	output->destroy_pending = 0;
+	output->disable_pending = 0;
+	output->original_crtc = NULL;
+
+	weston_output_init(&output->base, b->compositor);
+	weston_compositor_add_pending_output(&output->base, b->compositor);
+
+	return 0;
 }
 
 static void
@@ -2572,23 +2699,15 @@ destroy_sprites(struct drm_backend *backend)
 }
 
 static int
-create_outputs(struct drm_backend *b, uint32_t option_connector,
-	       struct udev_device *drm_device)
+create_outputs(struct drm_backend *b, struct udev_device *drm_device)
 {
 	drmModeConnector *connector;
 	drmModeRes *resources;
 	int i;
-	int x = 0, y = 0;
 
 	resources = drmModeGetResources(b->drm.fd);
 	if (!resources) {
 		weston_log("drmModeGetResources failed\n");
-		return -1;
-	}
-
-	b->crtcs = calloc(resources->count_crtcs, sizeof(uint32_t));
-	if (!b->crtcs) {
-		drmModeFreeResources(resources);
 		return -1;
 	}
 
@@ -2597,9 +2716,6 @@ create_outputs(struct drm_backend *b, uint32_t option_connector,
 	b->min_height = resources->min_height;
 	b->max_height = resources->max_height;
 
-	b->num_crtcs = resources->count_crtcs;
-	memcpy(b->crtcs, resources->crtcs, sizeof(uint32_t) * b->num_crtcs);
-
 	for (i = 0; i < resources->count_connectors; i++) {
 		connector = drmModeGetConnector(b->drm.fd,
 						resources->connectors[i]);
@@ -2607,24 +2723,20 @@ create_outputs(struct drm_backend *b, uint32_t option_connector,
 			continue;
 
 		if (connector->connection == DRM_MODE_CONNECTED &&
-		    (option_connector == 0 ||
-		     connector->connector_id == option_connector)) {
+		    (b->connector == 0 ||
+		     connector->connector_id == b->connector)) {
 			if (create_output_for_connector(b, resources,
-							connector, x, y,
-							drm_device) < 0) {
+							connector, drm_device) < 0) {
 				drmModeFreeConnector(connector);
 				continue;
 			}
-
-			x += container_of(b->compositor->output_list.prev,
-					  struct weston_output,
-					  link)->width;
+		} else {
+			drmModeFreeConnector(connector);
 		}
-
-		drmModeFreeConnector(connector);
 	}
 
-	if (wl_list_empty(&b->compositor->output_list))
+	if (wl_list_empty(&b->compositor->output_list) &&
+	    wl_list_empty(&b->compositor->pending_output_list))
 		weston_log("No currently active connector found.\n");
 
 	drmModeFreeResources(resources);
@@ -2638,8 +2750,7 @@ update_outputs(struct drm_backend *b, struct udev_device *drm_device)
 	drmModeConnector *connector;
 	drmModeRes *resources;
 	struct drm_output *output, *next;
-	int x = 0, y = 0;
-	uint32_t connected = 0, disconnects = 0;
+	uint32_t *connected;
 	int i;
 
 	resources = drmModeGetResources(b->drm.fd);
@@ -2648,9 +2759,15 @@ update_outputs(struct drm_backend *b, struct udev_device *drm_device)
 		return;
 	}
 
+	connected = calloc(resources->count_connectors, sizeof(uint32_t));
+	if (!connected) {
+		drmModeFreeResources(resources);
+		return;
+	}
+
 	/* collect new connects */
 	for (i = 0; i < resources->count_connectors; i++) {
-		int connector_id = resources->connectors[i];
+		uint32_t connector_id = resources->connectors[i];
 
 		connector = drmModeGetConnector(b->drm.fd, connector_id);
 		if (connector == NULL)
@@ -2661,41 +2778,61 @@ update_outputs(struct drm_backend *b, struct udev_device *drm_device)
 			continue;
 		}
 
-		connected |= (1 << connector_id);
-
-		if (!(b->connector_allocator & (1 << connector_id))) {
-			struct weston_output *last =
-				container_of(b->compositor->output_list.prev,
-					     struct weston_output, link);
-
-			/* XXX: not yet needed, we die with 0 outputs */
-			if (!wl_list_empty(&b->compositor->output_list))
-				x = last->x + last->width;
-			else
-				x = 0;
-			y = 0;
-			create_output_for_connector(b, resources,
-						    connector, x, y,
-						    drm_device);
-			weston_log("connector %d connected\n", connector_id);
-
+		if (b->connector && (b->connector != connector_id)) {
+			drmModeFreeConnector(connector);
+			continue;
 		}
-		drmModeFreeConnector(connector);
-	}
-	drmModeFreeResources(resources);
 
-	disconnects = b->connector_allocator & ~connected;
-	if (disconnects) {
-		wl_list_for_each_safe(output, next, &b->compositor->output_list,
-				      base.link) {
-			if (disconnects & (1 << output->connector_id)) {
-				disconnects &= ~(1 << output->connector_id);
-				weston_log("connector %d disconnected\n",
-				       output->connector_id);
-				drm_output_destroy(&output->base);
+		connected[i] = connector_id;
+
+		if (drm_output_find_by_connector(b, connector_id)) {
+			drmModeFreeConnector(connector);
+			continue;
+		}
+
+		create_output_for_connector(b, resources,
+					    connector, drm_device);
+		weston_log("connector %d connected\n", connector_id);
+	}
+
+	wl_list_for_each_safe(output, next, &b->compositor->output_list,
+			      base.link) {
+		bool disconnected = true;
+
+		for (i = 0; i < resources->count_connectors; i++) {
+			if (connected[i] == output->connector_id) {
+				disconnected = false;
+				break;
 			}
 		}
+
+		if (!disconnected)
+			continue;
+
+		weston_log("connector %d disconnected\n", output->connector_id);
+		drm_output_destroy(&output->base);
 	}
+
+	wl_list_for_each_safe(output, next, &b->compositor->pending_output_list,
+			      base.link) {
+		bool disconnected = true;
+
+		for (i = 0; i < resources->count_connectors; i++) {
+			if (connected[i] == output->connector_id) {
+				disconnected = false;
+				break;
+			}
+		}
+
+		if (!disconnected)
+			continue;
+
+		weston_log("connector %d disconnected\n", output->connector_id);
+		drm_output_destroy(&output->base);
+	}
+
+	free(connected);
+	drmModeFreeResources(resources);
 }
 
 static int
@@ -2761,38 +2898,6 @@ drm_destroy(struct weston_compositor *ec)
 }
 
 static void
-drm_backend_set_modes(struct drm_backend *backend)
-{
-	struct drm_output *output;
-	struct drm_mode *drm_mode;
-	int ret;
-
-	wl_list_for_each(output, &backend->compositor->output_list, base.link) {
-		if (!output->current) {
-			/* If something that would cause the output to
-			 * switch mode happened while in another vt, we
-			 * might not have a current drm_fb. In that case,
-			 * schedule a repaint and let drm_output_repaint
-			 * handle setting the mode. */
-			weston_output_schedule_repaint(&output->base);
-			continue;
-		}
-
-		drm_mode = (struct drm_mode *) output->base.current_mode;
-		ret = drmModeSetCrtc(backend->drm.fd, output->crtc_id,
-				     output->current->fb_id, 0, 0,
-				     &output->connector_id, 1,
-				     &drm_mode->mode_info);
-		if (ret < 0) {
-			weston_log(
-				"failed to set mode %dx%d for output at %d,%d: %m\n",
-				drm_mode->base.width, drm_mode->base.height,
-				output->base.x, output->base.y);
-		}
-	}
-}
-
-static void
 session_notify(struct wl_listener *listener, void *data)
 {
 	struct weston_compositor *compositor = data;
@@ -2802,22 +2907,20 @@ session_notify(struct wl_listener *listener, void *data)
 
 	if (compositor->session_active) {
 		weston_log("activating session\n");
-		compositor->state = b->prev_state;
-		drm_backend_set_modes(b);
+		weston_compositor_wake(compositor);
 		weston_compositor_damage_all(compositor);
 		udev_input_enable(&b->input);
 	} else {
 		weston_log("deactivating session\n");
 		udev_input_disable(&b->input);
 
-		b->prev_state = compositor->state;
 		weston_compositor_offscreen(compositor);
 
 		/* If we have a repaint scheduled (either from a
 		 * pending pageflip or the idle handler), make sure we
 		 * cancel that so we don't try to pageflip when we're
 		 * vt switched away.  The OFFSCREEN state will prevent
-		 * further attemps at repainting.  When we switch
+		 * further attempts at repainting.  When we switch
 		 * back, we schedule a repaint, which will process
 		 * pending frame callbacks. */
 
@@ -3078,6 +3181,12 @@ renderer_switch_binding(struct weston_keyboard *keyboard, uint32_t time,
 	switch_to_gl_renderer(b);
 }
 
+static const struct weston_drm_output_api api = {
+	drm_output_set_mode,
+	drm_output_set_gbm_format,
+	drm_output_set_seat,
+};
+
 static struct drm_backend *
 drm_backend_create(struct weston_compositor *compositor,
 		   struct weston_drm_backend_config *config)
@@ -3087,6 +3196,7 @@ drm_backend_create(struct weston_compositor *compositor,
 	struct wl_event_loop *loop;
 	const char *path;
 	const char *seat_id = default_seat;
+	int ret;
 
 	weston_log("initializing drm backend\n");
 
@@ -3107,8 +3217,6 @@ drm_backend_create(struct weston_compositor *compositor,
 	b->sprites_are_broken = 1;
 	b->compositor = compositor;
 	b->use_pixman = config->use_pixman;
-	b->configure_output = config->configure_output;
-	b->use_current_mode = config->use_current_mode;
 
 	if (parse_gbm_format(config->gbm_format, GBM_FORMAT_XRGB8888, &b->gbm_format) < 0)
 		goto err_compositor;
@@ -3161,8 +3269,6 @@ drm_backend_create(struct weston_compositor *compositor,
 	b->base.destroy = drm_destroy;
 	b->base.restore = drm_restore;
 
-	b->prev_state = WESTON_COMPOSITOR_ACTIVE;
-
 	weston_setup_vt_switch_bindings(compositor);
 
 	wl_list_init(&b->sprite_list);
@@ -3175,7 +3281,9 @@ drm_backend_create(struct weston_compositor *compositor,
 		goto err_sprite;
 	}
 
-	if (create_outputs(b, config->connector, drm_device) < 0) {
+	b->connector = config->connector;
+
+	if (create_outputs(b, drm_device) < 0) {
 		weston_log("failed to create output for %s\n", path);
 		goto err_udev_input;
 	}
@@ -3194,7 +3302,7 @@ drm_backend_create(struct weston_compositor *compositor,
 
 	b->udev_monitor = udev_monitor_new_from_netlink(b->udev, "udev");
 	if (b->udev_monitor == NULL) {
-		weston_log("failed to intialize udev monitor\n");
+		weston_log("failed to initialize udev monitor\n");
 		goto err_drm_source;
 	}
 	udev_monitor_filter_add_match_subsystem_devtype(b->udev_monitor,
@@ -3230,6 +3338,14 @@ drm_backend_create(struct weston_compositor *compositor,
 
 	compositor->backend = &b->base;
 
+	ret = weston_plugin_api_register(compositor, WESTON_DRM_OUTPUT_API_NAME,
+					 &api, sizeof(api));
+
+	if (ret < 0) {
+		weston_log("Failed to register output API.\n");
+		goto err_udev_monitor;
+	}
+
 	return b;
 
 err_udev_monitor:
@@ -3261,8 +3377,8 @@ config_init_to_defaults(struct weston_drm_backend_config *config)
 }
 
 WL_EXPORT int
-backend_init(struct weston_compositor *compositor,
-	     struct weston_backend_config *config_base)
+weston_backend_init(struct weston_compositor *compositor,
+		    struct weston_backend_config *config_base)
 {
 	struct drm_backend *b;
 	struct weston_drm_backend_config config = {{ 0, }};

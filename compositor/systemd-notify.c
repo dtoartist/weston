@@ -34,6 +34,7 @@
 #include "shared/string-helpers.h"
 #include "shared/zalloc.h"
 #include "compositor.h"
+#include "weston.h"
 
 struct systemd_notifier {
 	int watchdog_time;
@@ -114,12 +115,12 @@ weston_compositor_destroy_listener(struct wl_listener *listener, void *data)
 }
 
 WL_EXPORT int
-module_init(struct weston_compositor *compositor,
-	    int *argc, char *argv[])
+wet_module_init(struct weston_compositor *compositor,
+		int *argc, char *argv[])
 {
 	char *watchdog_time_env;
 	struct wl_event_loop *loop;
-	long watchdog_time_conv;
+	int32_t watchdog_time_conv;
 	struct systemd_notifier *notifier;
 
 	notifier = zalloc(sizeof *notifier);

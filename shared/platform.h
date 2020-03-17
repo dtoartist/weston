@@ -33,9 +33,9 @@
 #include <wayland-egl.h>
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
-#endif
 
 #include "weston-egl-ext.h"
+#endif
 
 #ifdef  __cplusplus
 extern "C" {
@@ -128,6 +128,13 @@ weston_platform_create_egl_surface(EGLDisplay dpy, EGLConfig config,
 				      attrib_list);
 }
 
+static inline EGLBoolean
+weston_platform_destroy_egl_surface(EGLDisplay display,
+				    EGLSurface surface)
+{
+	return eglDestroySurface(display, surface);
+}
+
 #else /* ENABLE_EGL */
 
 static inline void *
@@ -143,6 +150,13 @@ weston_platform_create_egl_surface(void *dpy, void *config,
 				   const int *attrib_list)
 {
 	return NULL;
+}
+
+static inline unsigned int
+weston_platform_destroy_egl_surface(void *display,
+				    void *surface)
+{
+	return 1;
 }
 #endif /* ENABLE_EGL */
 

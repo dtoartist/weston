@@ -34,26 +34,16 @@ extern "C" {
 
 #include <stdint.h>
 
-#define WESTON_WAYLAND_BACKEND_CONFIG_VERSION 1
-
-struct weston_wayland_backend_output_config {
-	int width;
-	int height;
-	char *name;
-	uint32_t transform;
-	int32_t scale;
-};
+#define WESTON_WAYLAND_BACKEND_CONFIG_VERSION 2
 
 struct weston_wayland_backend_config {
 	struct weston_backend_config base;
-	int use_pixman;
-	int sprawl;
+	bool use_pixman;
+	bool sprawl;
 	char *display_name;
-	int fullscreen;
+	bool fullscreen;
 	char *cursor_theme;
 	int cursor_size;
-	int num_outputs;
-	struct weston_wayland_backend_output_config *outputs;
 };
 
 #ifdef  __cplusplus

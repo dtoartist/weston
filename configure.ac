@@ -1,10 +1,10 @@
-m4_define([weston_major_version],  [1])
-m4_define([weston_minor_version],  [12])
+m4_define([weston_major_version],  [2])
+m4_define([weston_minor_version],  [0])
 m4_define([weston_micro_version],  [0])
 m4_define([weston_version],
           [weston_major_version.weston_minor_version.weston_micro_version])
-m4_define([libweston_major_version], [1])
-m4_define([libweston_minor_version], [12])
+m4_define([libweston_major_version], [2])
+m4_define([libweston_minor_version], [0])
 m4_define([libweston_patch_version], [0])
 
 AC_PREREQ([2.64])
@@ -88,8 +88,9 @@ PKG_PROG_PKG_CONFIG()
 
 WESTON_SEARCH_LIBS([DLOPEN], [dl], [dlopen])
 
-# In old glibc versions (< 2.17) clock_gettime() is in librt
+# In old glibc versions (< 2.17) clock_gettime() and clock_getres() are in librt
 WESTON_SEARCH_LIBS([CLOCK_GETTIME], [rt], [clock_gettime])
+WESTON_SEARCH_LIBS([CLOCK_GETRES], [rt], [clock_getres])
 
 AC_CHECK_DECL(SFD_CLOEXEC,[],
 	      [AC_MSG_ERROR("SFD_CLOEXEC is needed to compile weston")],
@@ -140,12 +141,16 @@ AC_ARG_ENABLE(xkbcommon,
 			      support: This is only useful in environments
 			      where you do not have a hardware keyboard. If
 			      libxkbcommon support is disabled clients will not
-			      be sent a keymap and and must know how to
-			      interpret the keycode sent for any key event.]),,
+			      be sent a keymap and must know how to interpret
+			      the keycode sent for any key event.]),,
 	      enable_xkbcommon=yes)
 if test x$enable_xkbcommon = xyes; then
 	AC_DEFINE(ENABLE_XKBCOMMON, [1], [Build Weston with libxkbcommon support])
 	COMPOSITOR_MODULES="$COMPOSITOR_MODULES xkbcommon >= 0.3.0"
+	PKG_CHECK_MODULES(XKBCOMMON_COMPOSE, [xkbcommon >= 0.5.0],
+	                  [AC_DEFINE(HAVE_XKBCOMMON_COMPOSE, 1,
+			             [Define if xkbcommon is 0.5.0 or newer])],
+                          true)
 fi
 
 AC_ARG_ENABLE(setuid-install, [  --enable-setuid-install],,
@@ -178,29 +183,13 @@ PKG_CHECK_MODULES(LIBDRM, [libdrm],
 AC_ARG_ENABLE(x11-compositor, [  --enable-x11-compositor],,
 	      enable_x11_compositor=yes)
 AM_CONDITIONAL(ENABLE_X11_COMPOSITOR, test x$enable_x11_compositor = xyes)
+have_xcb_xkb=no
 if test x$enable_x11_compositor = xyes; then
-  PKG_CHECK_MODULES([XCB], xcb)
-  xcb_save_LIBS=$LIBS
-  xcb_save_CFLAGS=$CFLAGS
-  CFLAGS=$XCB_CFLAGS
-  LIBS=$XCB_LIBS
-  AC_CHECK_FUNCS([xcb_poll_for_queued_event])
-  LIBS=$xcb_save_LIBS
-  CFLAGS=$xcb_save_CFLAGS
-
+  PKG_CHECK_MODULES([XCB], xcb >= 1.8)
   X11_COMPOSITOR_MODULES="x11 x11-xcb xcb-shm"
 
-  PKG_CHECK_MODULES(X11_COMPOSITOR_XKB, [xcb-xkb],
+  PKG_CHECK_MODULES(X11_COMPOSITOR_XKB, [xcb-xkb >= 1.9],
 		    [have_xcb_xkb="yes"], [have_xcb_xkb="no"])
-  if test "x$have_xcb_xkb" = xyes; then
-	# Most versions of XCB have totally broken XKB bindings, where the
-	# events don't work.  Make sure we can actually use them.
-	xcb_xkb_save_CFLAGS=$CFLAGS
-	CFLAGS=$X11_COMPOSITOR_XKB_CFLAGS
-	AC_CHECK_MEMBER([struct xcb_xkb_state_notify_event_t.xkbType],
-			[], [have_xcb_xkb=no], [[#include <xcb/xkb.h>]])
-	CFLAGS=$xcb_xkb_save_CFLAGS
-  fi
   if test "x$have_xcb_xkb" = xyes; then
 	X11_COMPOSITOR_MODULES="$X11_COMPOSITOR_MODULES xcb-xkb"
 	AC_DEFINE([HAVE_XCB_XKB], [1], [libxcb supports XKB protocol])
@@ -233,11 +222,14 @@ AC_SUBST(WAYLAND_PROTOCOLS_DATADIR, $ac_wayland_protocols_pkgdatadir)
 AC_ARG_ENABLE(wayland-compositor, [  --enable-wayland-compositor],,
 	      enable_wayland_compositor=yes)
 AM_CONDITIONAL(ENABLE_WAYLAND_COMPOSITOR,
-	       test x$enable_wayland_compositor = xyes -a x$enable_egl = xyes)
-if test x$enable_wayland_compositor = xyes -a x$enable_egl = xyes; then
+	       test x$enable_wayland_compositor = xyes)
+if test x$enable_wayland_compositor = xyes; then
   AC_DEFINE([BUILD_WAYLAND_COMPOSITOR], [1],
 	    [Build the Wayland (nested) compositor])
-  PKG_CHECK_MODULES(WAYLAND_COMPOSITOR, [wayland-client >= $WAYLAND_PREREQ_VERSION wayland-egl wayland-cursor])
+  PKG_CHECK_MODULES(WAYLAND_COMPOSITOR, [wayland-client >= $WAYLAND_PREREQ_VERSION wayland-cursor])
+  if test x$enable_egl = xyes; then
+    PKG_CHECK_MODULES(WAYLAND_COMPOSITOR_EGL, [wayland-egl])
+  fi
 fi
 
 
@@ -349,6 +341,7 @@ AS_IF([test "x$have_webp" = "xyes"],
 
 AC_ARG_ENABLE(vaapi-recorder, [  --enable-vaapi-recorder],,
 	      enable_vaapi_recorder=auto)
+have_libva=no
 if test x$enable_vaapi_recorder != xno; then
   PKG_CHECK_MODULES(LIBVA, [libva >= 0.34.0 libva-drm >= 0.34.0],
                     [have_libva=yes], [have_libva=no])
@@ -413,6 +406,7 @@ AM_CONDITIONAL(BUILD_SIMPLE_DMABUF_V4L_CLIENT, test "x$enable_simple_dmabuf_v4l_
 
 AC_ARG_ENABLE(clients, [  --enable-clients],, enable_clients=yes)
 AM_CONDITIONAL(BUILD_CLIENTS, test x$enable_clients = xyes)
+have_cairo_egl=no
 if test x$enable_clients = xyes; then
   AC_DEFINE([BUILD_CLIENTS], [1], [Build the Wayland clients])
 
@@ -429,7 +423,7 @@ if test x$enable_clients = xyes; then
 	  [AC_ERROR([cairo-egl not used because $CAIRO_EGL_PKG_ERRORS])])],
   [have_cairo_egl=no])
 
-  PKG_CHECK_MODULES(PANGO, [pangocairo], [have_pango=yes], [have_pango=no])
+  PKG_CHECK_MODULES(PANGO, [pangocairo pango glib-2.0 >= 2.36], [have_pango=yes], [have_pango=no])
 fi
 
 AC_ARG_ENABLE(resize-optimization,
@@ -440,10 +434,10 @@ AS_IF([test "x$enable_resize_optimization" = "xyes"],
       [AC_DEFINE([USE_RESIZE_POOL], [1], [Use resize memory pool as a performance optimization])])
 
 AC_ARG_ENABLE(weston-launch, [  --enable-weston-launch],, enable_weston_launch=yes)
-AM_CONDITIONAL(BUILD_WESTON_LAUNCH, test x$enable_weston_launch == xyes)
-if test x$enable_weston_launch == xyes; then
+AM_CONDITIONAL(BUILD_WESTON_LAUNCH, test x$enable_weston_launch = xyes)
+if test x$enable_weston_launch = xyes; then
   WESTON_SEARCH_LIBS([PAM], [pam], [pam_open_session], [have_pam=yes], [have_pam=no])
-  if test x$have_pam == xno; then
+  if test x$have_pam = xno; then
     AC_ERROR([weston-launch requires pam])
   fi
 fi
@@ -473,6 +467,7 @@ AC_ARG_ENABLE(colord,
               AS_HELP_STRING([--disable-colord],
                              [do not build colord CMS support]),,
 	      enable_colord=auto)
+have_colord=no
 if test "x$enable_colord" != "xno"; then
 	PKG_CHECK_MODULES(COLORD,
 			  colord >= 0.1.27,
@@ -598,6 +593,7 @@ AC_ARG_ENABLE(libunwind,
                              [Disable libunwind usage for backtraces]),,
               enable_libunwind=auto)
 AM_CONDITIONAL(HAVE_LIBUNWIND, [test "x$enable_libunwind" = xyes])
+have_libunwind=no
 if test "x$enable_libunwind" != "xno"; then
         PKG_CHECK_MODULES(LIBUNWIND,
                           libunwind,
@@ -637,6 +633,7 @@ AC_ARG_ENABLE(lcms,
               AS_HELP_STRING([--disable-lcms],
                              [Disable lcms support]),,
               enable_lcms=auto)
+have_lcms=no
 if test "x$enable_lcms" != "xno"; then
         PKG_CHECK_MODULES(LCMS,
                           lcms2,
