@@ -40,6 +40,7 @@
 #include <libgen.h>
 #include <ctype.h>
 #include <time.h>
+#include <assert.h>
 
 #include <wayland-client.h>
 #include "window.h"
@@ -55,12 +56,22 @@
 
 extern char **environ; /* defined by libc */
 
+enum clock_format {
+	CLOCK_FORMAT_MINUTES,
+	CLOCK_FORMAT_SECONDS,
+	CLOCK_FORMAT_NONE
+};
+
 struct desktop {
 	struct display *display;
 	struct weston_desktop_shell *shell;
 	struct unlock_dialog *unlock_dialog;
 	struct task unlock_task;
 	struct wl_list outputs;
+
+	int want_panel;
+	enum weston_desktop_shell_panel_position panel_position;
+	enum clock_format clock_format;
 
 	struct window *grab_window;
 	struct widget *grab_widget;
@@ -87,7 +98,8 @@ struct panel {
 	struct wl_list launcher_list;
 	struct panel_clock *clock;
 	int painted;
-	int clock_format;
+	enum weston_desktop_shell_panel_position panel_position;
+	enum clock_format clock_format;
 	uint32_t color;
 };
 
@@ -414,12 +426,6 @@ panel_destroy_clock(struct panel_clock *clock)
 	free(clock);
 }
 
-enum {
-	CLOCK_FORMAT_MINUTES,
-	CLOCK_FORMAT_SECONDS,
-	CLOCK_FORMAT_NONE
-};
-
 static void
 panel_add_clock(struct panel *panel)
 {
@@ -446,6 +452,8 @@ panel_add_clock(struct panel *panel)
 		clock->format_string = "%a %b %d, %I:%M:%S %p";
 		clock->refresh_timer = 1;
 		break;
+	case CLOCK_FORMAT_NONE:
+		assert(!"not reached");
 	}
 
 	clock->clock_task.run = clock_func;
@@ -463,16 +471,28 @@ panel_resize_handler(struct widget *widget,
 {
 	struct panel_launcher *launcher;
 	struct panel *panel = data;
-	int x, y, w, h;
+	int bx = width / 2;
+	int by = height / 2;
+	int spacing = 10;
+	int x = spacing;
+	int y = spacing;
+	int w, h;
+	int horizontal = panel->panel_position == WESTON_DESKTOP_SHELL_PANEL_POSITION_TOP || panel->panel_position == WESTON_DESKTOP_SHELL_PANEL_POSITION_BOTTOM;
 
-	x = 10;
-	y = 16;
 	wl_list_for_each(launcher, &panel->launcher_list, link) {
 		w = cairo_image_surface_get_width(launcher->icon);
 		h = cairo_image_surface_get_height(launcher->icon);
+
+		if (horizontal)
+			y = by - h / 2;
+		else
+			x = bx - w / 2;
 		widget_set_allocation(launcher->widget,
-				      x, y - h / 2, w + 1, h + 1);
-		x += w + 10;
+				      x, y, w + 1, h + 1);
+		if (horizontal)
+			x += w + spacing;
+		else
+			y += h + spacing;
 	}
 
 	h = 20;
@@ -482,9 +502,17 @@ panel_resize_handler(struct widget *widget,
 	else /* CLOCK_FORMAT_MINUTES */
 		w = 170;
 
+	if (horizontal) {
+		x = width - w - spacing;
+		y = by - h / 2;
+	} else {
+		x = bx - w / 2;
+		y = height - h - spacing;
+	}
+
 	if (panel->clock)
 		widget_set_allocation(panel->clock->widget,
-				      width - w - 8, y - h / 2, w + 1, h + 1);
+				      x, y, w + 1, h + 1);
 }
 
 static void
@@ -493,10 +521,31 @@ panel_configure(void *data,
 		uint32_t edges, struct window *window,
 		int32_t width, int32_t height)
 {
+	struct desktop *desktop = data;
 	struct surface *surface = window_get_user_data(window);
 	struct panel *panel = container_of(surface, struct panel, base);
 
-	window_schedule_resize(panel->window, width, 32);
+	switch (desktop->panel_position) {
+	case WESTON_DESKTOP_SHELL_PANEL_POSITION_TOP:
+	case WESTON_DESKTOP_SHELL_PANEL_POSITION_BOTTOM:
+		height = 32;
+		break;
+	case WESTON_DESKTOP_SHELL_PANEL_POSITION_LEFT:
+	case WESTON_DESKTOP_SHELL_PANEL_POSITION_RIGHT:
+		switch (desktop->clock_format) {
+		case CLOCK_FORMAT_NONE:
+			width = 32;
+			break;
+		case CLOCK_FORMAT_MINUTES:
+			width = 170;
+			break;
+		case CLOCK_FORMAT_SECONDS:
+			width = 190;
+			break;
+		}
+		break;
+	}
+	window_schedule_resize(panel->window, width, height);
 }
 
 static void
@@ -553,18 +602,8 @@ panel_create(struct desktop *desktop)
 	widget_set_redraw_handler(panel->widget, panel_redraw_handler);
 	widget_set_resize_handler(panel->widget, panel_resize_handler);
 
-	s = weston_config_get_section(desktop->config, "shell", NULL, NULL);
-	weston_config_section_get_string(s, "clock-format", &clock_format_option, "");
-
-	if (strcmp(clock_format_option, "minutes") == 0)
-		panel->clock_format = CLOCK_FORMAT_MINUTES;
-	else if (strcmp(clock_format_option, "seconds") == 0)
-		panel->clock_format = CLOCK_FORMAT_SECONDS;
-	else if (strcmp(clock_format_option, "none") == 0)
-		panel->clock_format = CLOCK_FORMAT_NONE;
-	else
-		panel->clock_format = DEFAULT_CLOCK_FORMAT;
-
+	panel->panel_position = desktop->panel_position;
+	panel->clock_format = desktop->clock_format;
 	if (panel->clock_format != CLOCK_FORMAT_NONE)
 		panel_add_clock(panel);
 
@@ -1061,9 +1100,7 @@ background_create(struct desktop *desktop)
 	background->widget = window_add_widget(background->window, background);
 	window_set_user_data(background->window, background);
 	widget_set_redraw_handler(background->widget, background_draw);
-	widget_set_transparent(background->widget, 0);
-	window_set_preferred_format(background->window,
-				    WINDOW_PREFERRED_FORMAT_RGB565);
+	widget_set_transparent(background->widget, 1);
 
 	s = weston_config_get_section(desktop->config, "shell", NULL, NULL);
 	weston_config_section_get_string(s, "background-image",
@@ -1207,31 +1244,12 @@ static const struct wl_output_listener output_listener = {
 	output_handle_scale
 };
 
-static int
-want_panel(struct desktop *desktop)
-{
-	struct weston_config_section *s;
-	char *location = NULL;
-	int ret = 1;
-
-	s = weston_config_get_section(desktop->config, "shell", NULL, NULL);
-	weston_config_section_get_string(s, "panel-location",
-					 &location, "top");
-
-	if (strcmp(location, "top") != 0)
-		ret = 0;
-
-	free(location);
-
-	return ret;
-}
-
 static void
 output_init(struct output *output, struct desktop *desktop)
 {
 	struct wl_surface *surface;
 
-	if (want_panel(desktop)) {
+	if (desktop->want_panel) {
 		output->panel = panel_create(desktop);
 		surface = window_get_wl_surface(output->panel->window);
 		weston_desktop_shell_set_panel(desktop->shell,
@@ -1339,6 +1357,48 @@ panel_add_launchers(struct panel *panel, struct desktop *desktop)
 	}
 }
 
+static void
+parse_panel_position(struct desktop *desktop, struct weston_config_section *s)
+{
+	char *position;
+
+	desktop->want_panel = 1;
+
+	weston_config_section_get_string(s, "panel-position", &position, "top");
+	if (strcmp(position, "top") == 0) {
+		desktop->panel_position = WESTON_DESKTOP_SHELL_PANEL_POSITION_TOP;
+	} else if (strcmp(position, "bottom") == 0) {
+		desktop->panel_position = WESTON_DESKTOP_SHELL_PANEL_POSITION_BOTTOM;
+	} else if (strcmp(position, "left") == 0) {
+		desktop->panel_position = WESTON_DESKTOP_SHELL_PANEL_POSITION_LEFT;
+	} else if (strcmp(position, "right") == 0) {
+		desktop->panel_position = WESTON_DESKTOP_SHELL_PANEL_POSITION_RIGHT;
+	} else {
+		/* 'none' is valid here */
+		if (strcmp(position, "none") != 0)
+			fprintf(stderr, "Wrong panel position: %s\n", position);
+		desktop->want_panel = 0;
+	}
+	free(position);
+}
+
+static void
+parse_clock_format(struct desktop *desktop, struct weston_config_section *s)
+{
+	char *clock_format;
+
+	weston_config_section_get_string(s, "clock-format", &clock_format, "");
+	if (strcmp(clock_format, "minutes") == 0)
+		desktop->clock_format = CLOCK_FORMAT_MINUTES;
+	else if (strcmp(clock_format, "seconds") == 0)
+		desktop->clock_format = CLOCK_FORMAT_SECONDS;
+	else if (strcmp(clock_format, "none") == 0)
+		desktop->clock_format = CLOCK_FORMAT_NONE;
+	else
+		desktop->clock_format = DEFAULT_CLOCK_FORMAT;
+	free(clock_format);
+}
+
 int main(int argc, char *argv[])
 {
 	struct desktop desktop = { 0 };
@@ -1353,6 +1413,8 @@ int main(int argc, char *argv[])
 	desktop.config = weston_config_parse(config_file);
 	s = weston_config_get_section(desktop.config, "shell", NULL, NULL);
 	weston_config_section_get_bool(s, "locking", &desktop.locking, 1);
+	parse_panel_position(&desktop, s);
+	parse_clock_format(&desktop, s);
 
 	desktop.display = display_create(&argc, argv);
 	if (desktop.display == NULL) {
@@ -1366,6 +1428,8 @@ int main(int argc, char *argv[])
 
 	/* Create panel and background for outputs processed before the shell
 	 * global interface was processed */
+	if (desktop.want_panel)
+		weston_desktop_shell_set_panel_position(desktop.shell, desktop.panel_position);
 	wl_list_for_each(output, &desktop.outputs, link)
 		if (!output->panel)
 			output_init(output, &desktop);

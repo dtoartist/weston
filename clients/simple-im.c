@@ -192,7 +192,7 @@ input_method_keyboard_keymap(void *data,
 		xkb_keymap_new_from_string(keyboard->xkb_context,
 					   map_str,
 					   XKB_KEYMAP_FORMAT_TEXT_V1,
-					   0);
+					   XKB_KEYMAP_COMPILE_NO_FLAGS);
 
 	munmap(map_str, size);
 	close(fd);
@@ -500,10 +500,10 @@ main(int argc, char *argv[])
 	wl_display_roundtrip(simple_im.display);
 	if (simple_im.input_method == NULL) {
 		fprintf(stderr, "No input_method global\n");
-		exit(1);
+		return -1;
 	}
 
-	simple_im.xkb_context = xkb_context_new(0);
+	simple_im.xkb_context = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
 	if (simple_im.xkb_context == NULL) {
 		fprintf(stderr, "Failed to create XKB context\n");
 		return -1;
@@ -517,7 +517,7 @@ main(int argc, char *argv[])
 
 	if (ret == -1) {
 		fprintf(stderr, "Dispatch error: %m\n");
-		exit(1);
+		return -1;
 	}
 
 	return 0;

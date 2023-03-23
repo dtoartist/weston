@@ -148,7 +148,9 @@ bind_to_unix_socket(int display)
 static int
 create_lockfile(int display, char *lockfile, size_t lsize)
 {
-	char pid[16];
+	/* 10 decimal characters, trailing LF and NUL byte; see comment
+	 * at end of function. */
+	char pid[11];
 	int fd, size;
 	pid_t other;
 
@@ -165,6 +167,9 @@ create_lockfile(int display, char *lockfile, size_t lsize)
 			errno = EEXIST;
 			return -1;
 		}
+
+		/* Trim the trailing LF, or at least ensure it's NULL. */
+		pid[10] = '\0';
 
 		if (!safe_strtoint(pid, &other)) {
 			weston_log("can't parse lock file %s\n",
@@ -196,10 +201,12 @@ create_lockfile(int display, char *lockfile, size_t lsize)
 		return -1;
 	}
 
-	/* Subtle detail: we use the pid of the wayland
-	 * compositor, not the xserver in the lock file. */
-	size = snprintf(pid, sizeof pid, "%10d\n", getpid());
-	if (write(fd, pid, size) != size) {
+	/* Subtle detail: we use the pid of the wayland compositor, not the
+	 * xserver in the lock file.
+	 * Also subtle is that we don't emit a trailing NUL to the file, so
+	 * our size here is 11 rather than 12. */
+	size = dprintf(fd, "%10d\n", getpid());
+	if (size != 11) {
 		unlink(lockfile);
 		close(fd);
 		return -1;
@@ -344,8 +351,7 @@ const struct weston_xwayland_api api = {
 extern const struct weston_xwayland_surface_api surface_api;
 
 WL_EXPORT int
-module_init(struct weston_compositor *compositor,
-	    int *argc, char *argv[])
+weston_module_init(struct weston_compositor *compositor)
 
 {
 	struct wl_display *display = compositor->wl_display;

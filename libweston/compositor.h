@@ -40,7 +40,6 @@ extern "C" {
 #define WL_HIDE_DEPRECATED
 #include <wayland-server.h>
 
-#include "version.h"
 #include "matrix.h"
 #include "config-parser.h"
 #include "zalloc.h"
@@ -218,6 +217,12 @@ struct weston_output {
 			  uint16_t *b);
 
 	struct weston_timeline_object timeline;
+
+	bool enabled;
+	int scale;
+
+	int (*enable)(struct weston_output *output);
+	int (*disable)(struct weston_output *output);
 };
 
 enum weston_pointer_motion_mask {
@@ -627,10 +632,68 @@ struct weston_layer_entry {
 	struct weston_layer *layer;
 };
 
+/**
+ * Higher value means higher in the stack.
+ *
+ * These values are based on well-known concepts in a classic desktop
+ * environment. Third-party modules based on libweston are encouraged to use
+ * them to integrate better with other projects.
+ *
+ * A fully integrated environment can use any value, based on these or not,
+ * at their discretion.
+ */
+enum weston_layer_position {
+	/*
+	 * Special value to make the layer invisible and still rendered.
+	 * This is used by compositors wanting e.g. minimized surfaces to still
+	 * receive frame callbacks.
+	 */
+	WESTON_LAYER_POSITION_HIDDEN     = 0x00000000,
+
+	/*
+	 * There should always be a background layer with a surface covering
+	 * the visible area.
+	 *
+	 * If the compositor handles the background itself, it should use
+	 * BACKGROUND.
+	 *
+	 * If the compositor supports runtime-loadable modules to set the
+	 * background, it should put a solid color surface at (BACKGROUND - 1)
+	 * and modules must use BACKGROUND.
+	 */
+	WESTON_LAYER_POSITION_BACKGROUND = 0x00000002,
+
+	/* For "desktop widgets" and applications like conky. */
+	WESTON_LAYER_POSITION_BOTTOM_UI  = 0x30000000,
+
+	/* For regular applications, only one layer should have this value
+	 * to ensure proper stacking control. */
+	WESTON_LAYER_POSITION_NORMAL     = 0x50000000,
+
+	/* For desktop UI, like panels. */
+	WESTON_LAYER_POSITION_UI         = 0x80000000,
+
+	/* For fullscreen applications that should cover UI. */
+	WESTON_LAYER_POSITION_FULLSCREEN = 0xb0000000,
+
+	/* For special UI like on-screen keyboard that fullscreen applications
+	 * will need. */
+	WESTON_LAYER_POSITION_TOP_UI     = 0xe0000000,
+
+	/* For the lock surface. */
+	WESTON_LAYER_POSITION_LOCK       = 0xffff0000,
+
+	/* Values reserved for libweston internal usage */
+	WESTON_LAYER_POSITION_CURSOR     = 0xfffffffe,
+	WESTON_LAYER_POSITION_FADE       = 0xffffffff,
+};
+
 struct weston_layer {
-	struct weston_layer_entry view_list;
-	struct wl_list link;
+	struct weston_compositor *compositor;
+	struct wl_list link; /* weston_compositor::layer_list */
+	enum weston_layer_position position;
 	pixman_box32_t mask;
+	struct weston_layer_entry view_list;
 };
 
 struct weston_plane {
@@ -686,20 +749,6 @@ enum weston_capability {
 
 	/* renderer supports weston_view_set_mask() clipping */
 	WESTON_CAP_VIEW_CLIP_MASK		= 0x0010,
-};
-
-/* Configuration struct for an output.
- *
- * This struct is used to pass the configuration for an output
- * to the compositor backend when creating a new output.
- * The backend can subclass this struct to handle backend
- * specific data.
- */
-struct weston_backend_output_config {
-	uint32_t transform;
-	uint32_t width;
-	uint32_t height;
-	uint32_t scale;
 };
 
 /* Configuration struct for a backend.
@@ -767,6 +816,7 @@ struct weston_compositor {
 	struct wl_signal update_input_panel_signal;
 
 	struct wl_signal seat_created_signal;
+	struct wl_signal output_pending_signal;
 	struct wl_signal output_created_signal;
 	struct wl_signal output_destroyed_signal;
 	struct wl_signal output_moved_signal;
@@ -778,9 +828,10 @@ struct weston_compositor {
 	struct weston_layer fade_layer;
 	struct weston_layer cursor_layer;
 
+	struct wl_list pending_output_list;
 	struct wl_list output_list;
 	struct wl_list seat_list;
-	struct wl_list layer_list;
+	struct wl_list layer_list;	/* struct weston_layer::link */
 	struct wl_list view_list;	/* struct weston_view::link */
 	struct wl_list plane_list;
 	struct wl_list key_binding_list;
@@ -836,6 +887,10 @@ struct weston_compositor {
 
 	void *user_data;
 	void (*exit)(struct weston_compositor *c);
+
+	/* Whether to let the compositor run without any input device. */
+	bool require_input;
+
 };
 
 struct weston_buffer {
@@ -1180,6 +1235,9 @@ struct weston_subsurface {
 	struct weston_surface_state cached;
 	struct weston_buffer_reference cached_buffer_ref;
 
+	/* Sub-surface has been reordered; need to apply damage. */
+	bool reordered;
+
 	int synchronized;
 
 	/* Used for constructing the view tree */
@@ -1300,7 +1358,13 @@ weston_layer_entry_insert(struct weston_layer_entry *list,
 void
 weston_layer_entry_remove(struct weston_layer_entry *entry);
 void
-weston_layer_init(struct weston_layer *layer, struct wl_list *below);
+weston_layer_init(struct weston_layer *layer,
+		  struct weston_compositor *compositor);
+void
+weston_layer_set_position(struct weston_layer *layer,
+			  enum weston_layer_position position);
+void
+weston_layer_unset_position(struct weston_layer *layer);
 
 void
 weston_layer_set_mask(struct weston_layer *layer, int x, int y, int width, int height);
@@ -1453,9 +1517,6 @@ weston_compositor_set_default_pointer_grab(struct weston_compositor *compositor,
 int
 weston_environment_get_fd(const char *env);
 
-struct wl_list *
-weston_compositor_top(struct weston_compositor *compositor);
-
 struct weston_surface *
 weston_surface_create(struct weston_compositor *compositor);
 
@@ -1603,9 +1664,7 @@ void
 weston_output_update_matrix(struct weston_output *output);
 void
 weston_output_move(struct weston_output *output, int x, int y);
-void
-weston_output_init(struct weston_output *output, struct weston_compositor *c,
-		   int x, int y, int width, int height, uint32_t transform, int32_t scale);
+
 void
 weston_compositor_add_output(struct weston_compositor *compositor,
                              struct weston_output *output);
@@ -1697,14 +1756,6 @@ weston_recorder_stop(struct weston_recorder *recorder);
 struct clipboard *
 clipboard_create(struct weston_seat *seat);
 
-struct text_backend;
-
-struct text_backend *
-text_backend_init(struct weston_compositor *ec);
-
-void
-text_backend_destroy(struct text_backend *text_backend);
-
 struct weston_view_animation;
 typedef	void (*weston_view_animation_done_func_t)(struct weston_view_animation *animation, void *data);
 
@@ -1722,8 +1773,13 @@ weston_fade_run(struct weston_view *view,
 
 struct weston_view_animation *
 weston_move_scale_run(struct weston_view *view, int dx, int dy,
-		      float start, float end, int reverse,
+		      float start, float end, bool reverse,
 		      weston_view_animation_done_func_t done, void *data);
+
+struct weston_view_animation *
+weston_move_run(struct weston_view *view, int dx, int dy,
+		float start, float end, bool reverse,
+		weston_view_animation_done_func_t done, void *data);
 
 void
 weston_fade_update(struct weston_view_animation *fade, float target);
@@ -1762,11 +1818,10 @@ int
 weston_input_init(struct weston_compositor *compositor);
 
 int
-backend_init(struct weston_compositor *c,
-	     struct weston_backend_config *config_base);
+weston_backend_init(struct weston_compositor *c,
+		    struct weston_backend_config *config_base);
 int
-module_init(struct weston_compositor *compositor,
-	    int *argc, char *argv[]);
+weston_module_init(struct weston_compositor *compositor);
 
 void
 weston_transformed_coord(int width, int height,
@@ -1812,6 +1867,31 @@ weston_seat_set_keyboard_focus(struct weston_seat *seat,
 
 int
 weston_compositor_load_xwayland(struct weston_compositor *compositor);
+
+void
+weston_output_set_scale(struct weston_output *output,
+			int32_t scale);
+
+void
+weston_output_set_transform(struct weston_output *output,
+			    uint32_t transform);
+
+void
+weston_output_init(struct weston_output *output,
+		   struct weston_compositor *compositor);
+
+void
+weston_compositor_add_pending_output(struct weston_output *output,
+				     struct weston_compositor *compositor);
+
+int
+weston_output_enable(struct weston_output *output);
+
+void
+weston_output_disable(struct weston_output *output);
+
+void
+weston_pending_output_coldplug(struct weston_compositor *compositor);
 
 #ifdef  __cplusplus
 }

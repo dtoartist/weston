@@ -34,6 +34,7 @@
 #include <assert.h>
 
 #include "compositor.h"
+#include "compositor/weston.h"
 #include "fullscreen-shell-unstable-v1-server-protocol.h"
 #include "shared/helpers.h"
 
@@ -896,8 +897,8 @@ bind_fullscreen_shell(struct wl_client *client, void *data, uint32_t version,
 }
 
 WL_EXPORT int
-module_init(struct weston_compositor *compositor,
-	    int *argc, char *argv[])
+wet_shell_init(struct weston_compositor *compositor,
+	       int *argc, char *argv[])
 {
 	struct fullscreen_shell *shell;
 	struct weston_seat *seat;
@@ -912,7 +913,9 @@ module_init(struct weston_compositor *compositor,
 
 	shell->client_destroyed.notify = client_destroyed;
 
-	weston_layer_init(&shell->layer, &compositor->cursor_layer.link);
+	weston_layer_init(&shell->layer, compositor);
+	weston_layer_set_position(&shell->layer,
+				  WESTON_LAYER_POSITION_FULLSCREEN);
 
 	wl_list_init(&shell->output_list);
 	shell->output_created_listener.notify = output_created;

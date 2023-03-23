@@ -406,7 +406,7 @@ weston_wm_read_data_source(int fd, uint32_t mask, void *data)
 			wm->property_source = NULL;
 		} else {
 			weston_log("got %zu bytes, "
-				"property deleted, seting new property\n",
+				"property deleted, setting new property\n",
 				wm->source_data.size);
 			weston_wm_flush_source_data(wm);
 		}
@@ -430,7 +430,7 @@ weston_wm_read_data_source(int fd, uint32_t mask, void *data)
 				"property delete\n", wm->source_data.size);
 		} else {
 			weston_log("got %zu bytes, "
-				"property deleted, seting new property\n",
+				"property deleted, setting new property\n",
 				wm->source_data.size);
 			weston_wm_flush_source_data(wm);
 		}
@@ -709,6 +709,8 @@ weston_wm_selection_init(struct weston_wm *wm)
 					  wm->atom.clipboard, mask);
 
 	seat = weston_wm_pick_seat(wm);
+	if (seat == NULL)
+		return;
 	wm->selection_listener.notify = weston_wm_set_selection;
 	wl_signal_add(&seat->selection_signal, &wm->selection_listener);
 

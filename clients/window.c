@@ -55,7 +55,7 @@
 #include <EGL/eglext.h>
 
 #include <cairo-gl.h>
-#else /* HAVE_CAIRO_EGL */
+#elif !defined(ENABLE_EGL) /* platform.h defines these if EGL is enabled */
 typedef void *EGLDisplay;
 typedef void *EGLConfig;
 typedef void *EGLContext;
@@ -63,6 +63,9 @@ typedef void *EGLContext;
 #endif /* no HAVE_CAIRO_EGL */
 
 #include <xkbcommon/xkbcommon.h>
+#ifdef HAVE_XKBCOMMON_COMPOSE
+#include <xkbcommon/xkbcommon-compose.h>
+#endif
 #include <wayland-cursor.h>
 
 #include <linux/input.h>
@@ -372,6 +375,10 @@ struct input {
 	struct {
 		struct xkb_keymap *keymap;
 		struct xkb_state *state;
+#ifdef HAVE_XKBCOMMON_COMPOSE
+		struct xkb_compose_table *compose_table;
+		struct xkb_compose_state *compose_state;
+#endif
 		xkb_mod_mask_t control_mask;
 		xkb_mod_mask_t alt_mask;
 		xkb_mod_mask_t shift_mask;
@@ -638,7 +645,7 @@ egl_window_surface_destroy(struct toysurface *base)
 	struct display *d = surface->display;
 
 	cairo_surface_destroy(surface->cairo_surface);
-	eglDestroySurface(d->dpy, surface->egl_surface);
+	weston_platform_destroy_egl_surface(d->dpy, surface->egl_surface);
 	wl_egl_window_destroy(surface->egl_window);
 	surface->surface = NULL;
 
@@ -2774,7 +2781,7 @@ pointer_handle_motion(void *data, struct wl_pointer *pointer,
 	input->sx = sx;
 	input->sy = sy;
 
-	/* when making the window smaller - e.g. after a unmaximise we might
+	/* when making the window smaller - e.g. after an unmaximise we might
 	 * still have a pending motion event that the compositor has picked
 	 * based on the old surface dimensions. However, if we have an active
 	 * grab, we expect to see input from outside the window anyway.
@@ -2979,6 +2986,11 @@ keyboard_handle_keymap(void *data, struct wl_keyboard *keyboard,
 	struct input *input = data;
 	struct xkb_keymap *keymap;
 	struct xkb_state *state;
+#ifdef HAVE_XKBCOMMON_COMPOSE
+	struct xkb_compose_table *compose_table;
+	struct xkb_compose_state *compose_state;
+#endif
+	char *locale;
 	char *map_str;
 
 	if (!data) {
@@ -2997,6 +3009,7 @@ keyboard_handle_keymap(void *data, struct wl_keyboard *keyboard,
 		return;
 	}
 
+	/* Set up XKB keymap */
 	keymap = xkb_keymap_new_from_string(input->display->xkb_context,
 					    map_str,
 					    XKB_KEYMAP_FORMAT_TEXT_V1,
@@ -3009,12 +3022,46 @@ keyboard_handle_keymap(void *data, struct wl_keyboard *keyboard,
 		return;
 	}
 
+	/* Set up XKB state */
 	state = xkb_state_new(keymap);
 	if (!state) {
 		fprintf(stderr, "failed to create XKB state\n");
 		xkb_keymap_unref(keymap);
 		return;
 	}
+
+	/* Look up the preferred locale, falling back to "C" as default */
+	if (!(locale = getenv("LC_ALL")))
+		if (!(locale = getenv("LC_CTYPE")))
+			if (!(locale = getenv("LANG")))
+				locale = "C";
+
+	/* Set up XKB compose table */
+#ifdef HAVE_XKBCOMMON_COMPOSE
+	compose_table =
+		xkb_compose_table_new_from_locale(input->display->xkb_context,
+						  locale,
+						  XKB_COMPOSE_COMPILE_NO_FLAGS);
+	if (compose_table) {
+		/* Set up XKB compose state */
+		compose_state = xkb_compose_state_new(compose_table,
+					      XKB_COMPOSE_STATE_NO_FLAGS);
+		if (compose_state) {
+			xkb_compose_state_unref(input->xkb.compose_state);
+			xkb_compose_table_unref(input->xkb.compose_table);
+			input->xkb.compose_state = compose_state;
+			input->xkb.compose_table = compose_table;
+		} else {
+			fprintf(stderr, "could not create XKB compose state.  "
+				"Disabiling compose.\n");
+			xkb_compose_table_unref(compose_table);
+			compose_table = NULL;
+		}
+	} else {
+		fprintf(stderr, "could not create XKB compose table for locale '%s'.  "
+			"Disabiling compose\n", locale);
+	}
+#endif
 
 	xkb_keymap_unref(input->xkb.keymap);
 	xkb_state_unref(input->xkb.state);
@@ -3037,6 +3084,11 @@ keyboard_handle_enter(void *data, struct wl_keyboard *keyboard,
 	struct input *input = data;
 	struct window *window;
 
+	if (!surface) {
+		/* enter event for a window we've just destroyed */
+		return;
+	}
+
 	input->display->serial = serial;
 	input->keyboard_focus = wl_surface_get_user_data(surface);
 
@@ -3054,6 +3106,36 @@ keyboard_handle_leave(void *data, struct wl_keyboard *keyboard,
 
 	input->display->serial = serial;
 	input_remove_keyboard_focus(input);
+}
+
+/* Translate symbols appropriately if a compose sequence is being entered */
+static xkb_keysym_t
+process_key_press(xkb_keysym_t sym, struct input *input)
+{
+#ifdef HAVE_XKBCOMMON_COMPOSE
+	if (!input->xkb.compose_state)
+		return sym;
+	if (sym == XKB_KEY_NoSymbol)
+		return sym;
+	if (xkb_compose_state_feed(input->xkb.compose_state,
+				   sym) != XKB_COMPOSE_FEED_ACCEPTED)
+		return sym;
+
+	switch (xkb_compose_state_get_status(input->xkb.compose_state)) {
+	case XKB_COMPOSE_COMPOSING:
+		return XKB_KEY_NoSymbol;
+	case XKB_COMPOSE_COMPOSED:
+		return xkb_compose_state_get_one_sym(input->xkb.compose_state);
+	case XKB_COMPOSE_CANCELLED:
+		return XKB_KEY_NoSymbol;
+	case XKB_COMPOSE_NOTHING:
+		return sym;
+	default:
+		return sym;
+	}
+#else
+	return sym;
+#endif
 }
 
 static void
@@ -3078,7 +3160,7 @@ keyboard_handle_key(void *data, struct wl_keyboard *keyboard,
 	 * ignore key presses if a grab is active.  We expand the key
 	 * event delivery mechanism to route events to widgets to
 	 * properly handle key grabs.  In the meantime, this prevents
-	 * key event devlivery while a grab is active. */
+	 * key event delivery while a grab is active. */
 	if (input->grab && input->grab_button == 0)
 		return;
 
@@ -3101,6 +3183,9 @@ keyboard_handle_key(void *data, struct wl_keyboard *keyboard,
 		   state == WL_KEYBOARD_KEY_STATE_PRESSED) {
 		window_close(window);
 	} else if (window->key_handler) {
+		if (state == WL_KEYBOARD_KEY_STATE_PRESSED)
+			sym = process_key_press(sym, input);
+
 		(*window->key_handler)(window, input, time, key,
 				       sym, state, window->user_data);
 	}
@@ -5252,7 +5337,7 @@ menu_button_handler(struct widget *widget,
 
 	if (state == WL_POINTER_BUTTON_STATE_RELEASED &&
 	    (menu->release_count > 0 || time - menu->time > 500)) {
-		/* Either relase after press-drag-release or
+		/* Either release after press-drag-release or
 		 * click-motion-click. */
 		menu->func(menu->user_data, input, menu->current);
 		input_ungrab(menu->input);
@@ -5392,30 +5477,16 @@ create_menu(struct display *display,
 	return menu;
 }
 
-struct window *
-window_create_menu(struct display *display,
-		   struct input *input, uint32_t time,
-		   menu_func_t func, const char **entries, int count,
-		   void *user_data)
-{
-	struct menu *menu;
-	menu = create_menu(display, input, time, func, entries, count, user_data);
-
-	if (menu == NULL)
-		return NULL;
-
-	return menu->window;
-}
-
 static struct zxdg_positioner_v6 *
 create_simple_positioner(struct display *display,
-			 int x, int y)
+			 int x, int y, int w, int h)
 {
 	struct zxdg_positioner_v6 *positioner;
 
 	positioner = zxdg_shell_v6_create_positioner(display->xdg_shell);
 	fail_on_null(positioner, 0, __FILE__, __LINE__);
 	zxdg_positioner_v6_set_anchor_rect(positioner, x, y, 1, 1);
+	zxdg_positioner_v6_set_size(positioner, w, h);
 	zxdg_positioner_v6_set_anchor(positioner,
 				      ZXDG_POSITIONER_V6_ANCHOR_TOP |
 				      ZXDG_POSITIONER_V6_ANCHOR_LEFT);
@@ -5467,7 +5538,9 @@ window_show_menu(struct display *display,
 
 	positioner = create_simple_positioner(display,
 					      window->x - (ix + parent_geometry.x),
-					      window->y - (iy + parent_geometry.y));
+					      window->y - (iy + parent_geometry.y),
+					      frame_width(menu->frame),
+					      frame_height(menu->frame));
 	window->xdg_popup =
 		zxdg_surface_v6_get_popup(window->xdg_surface,
 					  parent->xdg_surface,

@@ -244,47 +244,6 @@ device_add(struct wl_client *client,
 	}
 }
 
-#ifdef ENABLE_EGL
-static int
-is_egl_buffer(struct wl_resource *resource)
-{
-	PFNEGLQUERYWAYLANDBUFFERWL query_buffer =
-		(void *) eglGetProcAddress("eglQueryWaylandBufferWL");
-	EGLint format;
-
-	if (query_buffer(eglGetCurrentDisplay(),
-			 resource,
-			 EGL_TEXTURE_FORMAT,
-			 &format))
-		return 1;
-
-	return 0;
-}
-#endif /* ENABLE_EGL */
-
-static void
-get_n_buffers(struct wl_client *client, struct wl_resource *resource)
-{
-	int n_buffers = 0;
-
-#ifdef ENABLE_EGL
-	struct wl_resource *buffer_resource;
-	int i;
-
-	for (i = 0; i < 1000; i++) {
-		buffer_resource = wl_client_get_object(client, i);
-
-		if (buffer_resource == NULL)
-			continue;
-
-		if (is_egl_buffer(buffer_resource))
-			n_buffers++;
-	}
-#endif /* ENABLE_EGL */
-
-	weston_test_send_n_egl_buffers(resource, n_buffers);
-}
-
 enum weston_test_screenshot_outcome {
 	WESTON_TEST_SCREENSHOT_SUCCESS,
 	WESTON_TEST_SCREENSHOT_NO_MEMORY,
@@ -535,7 +494,6 @@ static const struct weston_test_interface test_implementation = {
 	send_key,
 	device_release,
 	device_add,
-	get_n_buffers,
 	capture_screenshot,
 };
 
@@ -585,8 +543,8 @@ idle_launch_client(void *data)
 }
 
 WL_EXPORT int
-module_init(struct weston_compositor *ec,
-	    int *argc, char *argv[])
+wet_module_init(struct weston_compositor *ec,
+		int *argc, char *argv[])
 {
 	struct weston_test *test;
 	struct wl_event_loop *loop;
@@ -596,7 +554,8 @@ module_init(struct weston_compositor *ec,
 		return -1;
 
 	test->compositor = ec;
-	weston_layer_init(&test->layer, &ec->cursor_layer.link);
+	weston_layer_init(&test->layer, ec);
+	weston_layer_set_position(&test->layer, WESTON_LAYER_POSITION_CURSOR - 1);
 
 	if (wl_global_create(ec->wl_display, &weston_test_interface, 1,
 			     test, bind_test) == NULL)

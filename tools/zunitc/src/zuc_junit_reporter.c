@@ -53,6 +53,12 @@
 
 #define ISO_8601_FORMAT "%Y-%m-%dT%H:%M:%SZ"
 
+#if LIBXML_VERSION >= 20904
+#define STRPRINTF_CAST
+#else
+#define STRPRINTF_CAST BAD_CAST
+#endif
+
 /**
  * Internal data.
  */
@@ -68,7 +74,7 @@ static void
 set_attribute(xmlNodePtr node, const char *name, int value)
 {
 	xmlChar scratch[MAX_64BIT_STRLEN + 1] = {};
-	xmlStrPrintf(scratch, sizeof(scratch), BAD_CAST "%d", value);
+	xmlStrPrintf(scratch, sizeof(scratch), STRPRINTF_CAST "%d", value);
 	xmlSetProp(node, BAD_CAST name, scratch);
 }
 
@@ -229,7 +235,7 @@ as_duration(long ms)
 	} else {
 		/*
 		 * Special case to match behavior of standard JUnit output
-		 * writers. Asumption is certain readers might have
+		 * writers. Assumption is certain readers might have
 		 * limitations, etc. so it is best to keep 100% identical
 		 * output.
 		 */

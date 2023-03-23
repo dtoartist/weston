@@ -72,6 +72,9 @@ install-libweston_moduleLTLIBRARIES install-moduleLTLIBRARIES: install-libLTLIBR
 lib_LTLIBRARIES = libweston-@LIBWESTON_MAJOR@.la
 libweston_@LIBWESTON_MAJOR@_la_CPPFLAGS = $(AM_CPPFLAGS) -DIN_WESTON
 libweston_@LIBWESTON_MAJOR@_la_CFLAGS = $(AM_CFLAGS) $(COMPOSITOR_CFLAGS) $(LIBUNWIND_CFLAGS)
+if ENABLE_DRM_COMPOSITOR
+libweston_@LIBWESTON_MAJOR@_la_CFLAGS += $(DRM_COMPOSITOR_CFLAGS)
+endif
 libweston_@LIBWESTON_MAJOR@_la_LIBADD = $(COMPOSITOR_LIBS) $(LIBUNWIND_LIBS) \
 	$(DLOPEN_LIBS) -lm $(CLOCK_GETTIME_LIBS) \
 	$(LIBINPUT_BACKEND_LIBS) libshared.la
@@ -111,12 +114,14 @@ libweston_@LIBWESTON_MAJOR@_la_SOURCES =			\
 	shared/timespec-util.h				\
 	shared/zalloc.h					\
 	shared/platform.h				\
-	libweston/weston-egl-ext.h
+	shared/weston-egl-ext.h
 
 lib_LTLIBRARIES += libweston-desktop-@LIBWESTON_MAJOR@.la
 libweston_desktop_@LIBWESTON_MAJOR@_la_CPPFLAGS = $(AM_CPPFLAGS) -DIN_WESTON
 libweston_desktop_@LIBWESTON_MAJOR@_la_CFLAGS = $(AM_CFLAGS) $(COMPOSITOR_CFLAGS)
-libweston_desktop_@LIBWESTON_MAJOR@_la_LIBADD = libweston-@LIBWESTON_MAJOR@.la $(COMPOSITOR_LIBS)
+libweston_desktop_@LIBWESTON_MAJOR@_la_LIBADD =		\
+	libweston-@LIBWESTON_MAJOR@.la			\
+	$(COMPOSITOR_LIBS)
 libweston_desktop_@LIBWESTON_MAJOR@_la_LDFLAGS = -version-info $(LT_VERSION_INFO)
 
 libweston_desktop_@LIBWESTON_MAJOR@_la_SOURCES =	\
@@ -145,7 +150,7 @@ libweston-desktop-@LIBWESTON_MAJOR@.la libweston-desktop/libweston_desktop_@LIBW
 if SYSTEMD_NOTIFY_SUPPORT
 module_LTLIBRARIES += systemd-notify.la
 systemd_notify_la_LDFLAGS = -module -avoid-version
-systemd_notify_la_LIBADD = $(SYSTEMD_DAEMON_LIBS)
+systemd_notify_la_LIBADD = libweston-@LIBWESTON_MAJOR@.la $(SYSTEMD_DAEMON_LIBS)
 systemd_notify_la_CFLAGS =			\
 	$(COMPOSITOR_CFLAGS)			\
 	$(SYSTEMD_DAEMON_CFLAGS)		\
@@ -190,6 +195,7 @@ weston_CFLAGS = $(AM_CFLAGS) $(COMPOSITOR_CFLAGS) $(LIBUNWIND_CFLAGS)
 weston_LDADD = libshared.la libweston-@LIBWESTON_MAJOR@.la \
 	$(COMPOSITOR_LIBS) $(LIBUNWIND_LIBS) \
 	$(DLOPEN_LIBS) $(LIBINPUT_BACKEND_LIBS) \
+	$(CLOCK_GETRES_LIBS) \
 	-lm
 
 weston_SOURCES = 					\
@@ -216,7 +222,7 @@ libsession_helper_la_SOURCES =			\
 	libweston/launcher-weston-launch.c	\
 	libweston/launcher-direct.c
 libsession_helper_la_CFLAGS = $(AM_CFLAGS) $(LIBDRM_CFLAGS) $(PIXMAN_CFLAGS) $(COMPOSITOR_CFLAGS)
-libsession_helper_la_LIBADD = $(LIBDRM_LIBS)
+libsession_helper_la_LIBADD = libweston-@LIBWESTON_MAJOR@.la $(LIBDRM_LIBS)
 
 if ENABLE_DBUS
 if HAVE_SYSTEMD_LOGIN
@@ -285,6 +291,7 @@ libwestoninclude_HEADERS =			\
 	libweston/compositor-rdp.h		\
 	libweston/compositor-wayland.h		\
 	libweston/compositor-x11.h		\
+	libweston/windowed-output-api.h		\
 	libweston/plugin-registry.h		\
 	libweston/timeline-object.h		\
 	shared/matrix.h				\
@@ -305,7 +312,10 @@ endif
 if ENABLE_EGL
 libweston_module_LTLIBRARIES += gl-renderer.la
 gl_renderer_la_LDFLAGS = -module -avoid-version
-gl_renderer_la_LIBADD = $(COMPOSITOR_LIBS) $(EGL_LIBS)
+gl_renderer_la_LIBADD =				\
+	libweston-@LIBWESTON_MAJOR@.la		\
+	$(EGL_LIBS)				\
+	$(COMPOSITOR_LIBS)
 gl_renderer_la_CFLAGS =				\
 	$(COMPOSITOR_CFLAGS)			\
 	$(EGL_CFLAGS)				\
@@ -322,15 +332,18 @@ endif
 if ENABLE_X11_COMPOSITOR
 libweston_module_LTLIBRARIES += x11-backend.la
 x11_backend_la_LDFLAGS = -module -avoid-version
-x11_backend_la_LIBADD = $(COMPOSITOR_LIBS) $(X11_COMPOSITOR_LIBS) \
-	libshared-cairo.la
+x11_backend_la_LIBADD =				\
+	libshared-cairo.la			\
+	libweston-@LIBWESTON_MAJOR@.la		\
+	$(X11_COMPOSITOR_LIBS)			\
+	$(COMPOSITOR_LIBS)
 x11_backend_la_CFLAGS =				\
+	$(AM_CFLAGS)				\
 	$(COMPOSITOR_CFLAGS)			\
 	$(EGL_CFLAGS)				\
 	$(PIXMAN_CFLAGS)			\
 	$(CAIRO_CFLAGS)				\
-	$(X11_COMPOSITOR_CFLAGS)		\
-	$(AM_CFLAGS)
+	$(X11_COMPOSITOR_CFLAGS)
 x11_backend_la_SOURCES = 			\
 	libweston/compositor-x11.c		\
 	libweston/compositor-x11.h		\
@@ -349,12 +362,13 @@ if ENABLE_DRM_COMPOSITOR
 libweston_module_LTLIBRARIES += drm-backend.la
 drm_backend_la_LDFLAGS = -module -avoid-version
 drm_backend_la_LIBADD =				\
+	libsession-helper.la			\
+	libweston-@LIBWESTON_MAJOR@.la		\
 	$(COMPOSITOR_LIBS)			\
 	$(DRM_COMPOSITOR_LIBS)			\
 	$(INPUT_BACKEND_LIBS)			\
 	libshared.la				\
-	$(CLOCK_GETTIME_LIBS)			\
-	libsession-helper.la
+	$(CLOCK_GETTIME_LIBS)
 drm_backend_la_CFLAGS =				\
 	$(COMPOSITOR_CFLAGS)			\
 	$(EGL_CFLAGS)				\
@@ -372,6 +386,7 @@ drm_backend_la_SOURCES =			\
 if ENABLE_VAAPI_RECORDER
 drm_backend_la_SOURCES += libweston/vaapi-recorder.c libweston/vaapi-recorder.h
 drm_backend_la_LIBADD += $(LIBVA_LIBS)
+drm_backend_la_LDFLAGS += -pthread
 drm_backend_la_CFLAGS += $(LIBVA_CFLAGS)
 endif
 endif
@@ -380,9 +395,11 @@ if ENABLE_WAYLAND_COMPOSITOR
 libweston_module_LTLIBRARIES += wayland-backend.la
 wayland_backend_la_LDFLAGS = -module -avoid-version
 wayland_backend_la_LIBADD =			\
+	libshared-cairo.la			\
+	libweston-@LIBWESTON_MAJOR@.la		\
 	$(COMPOSITOR_LIBS)			\
-	$(WAYLAND_COMPOSITOR_LIBS)		\
-	libshared-cairo.la
+	$(WAYLAND_COMPOSITOR_EGL_LIBS)		\
+	$(WAYLAND_COMPOSITOR_LIBS)
 wayland_backend_la_CFLAGS =			\
 	$(COMPOSITOR_CFLAGS)			\
 	$(EGL_CFLAGS)				\
@@ -390,19 +407,24 @@ wayland_backend_la_CFLAGS =			\
 	$(CAIRO_CFLAGS)				\
 	$(WAYLAND_COMPOSITOR_CFLAGS)		\
 	$(AM_CFLAGS)
-wayland_backend_la_SOURCES = 			\
-	libweston/compositor-wayland.c		\
-	libweston/compositor-wayland.h		\
+wayland_backend_la_SOURCES = 					\
+	libweston/compositor-wayland.c				\
+	libweston/compositor-wayland.h				\
 	shared/helpers.h
-nodist_wayland_backend_la_SOURCES =			\
-	protocol/fullscreen-shell-unstable-v1-protocol.c		\
-	protocol/fullscreen-shell-unstable-v1-client-protocol.h
+nodist_wayland_backend_la_SOURCES =				\
+	protocol/fullscreen-shell-unstable-v1-protocol.c	\
+	protocol/fullscreen-shell-unstable-v1-client-protocol.h	\
+	protocol/xdg-shell-unstable-v6-protocol.c		\
+	protocol/xdg-shell-unstable-v6-client-protocol.h
 endif
 
 if ENABLE_HEADLESS_COMPOSITOR
 libweston_module_LTLIBRARIES += headless-backend.la
 headless_backend_la_LDFLAGS = -module -avoid-version
-headless_backend_la_LIBADD = $(COMPOSITOR_LIBS) libshared.la
+headless_backend_la_LIBADD =			\
+	libshared.la				\
+	libweston-@LIBWESTON_MAJOR@.la		\
+	$(COMPOSITOR_LIBS)
 headless_backend_la_CFLAGS = $(COMPOSITOR_CFLAGS) $(AM_CFLAGS)
 headless_backend_la_SOURCES = 			\
 	libweston/compositor-headless.c		\
@@ -414,11 +436,12 @@ if ENABLE_FBDEV_COMPOSITOR
 libweston_module_LTLIBRARIES += fbdev-backend.la
 fbdev_backend_la_LDFLAGS = -module -avoid-version
 fbdev_backend_la_LIBADD =			\
+	libshared.la				\
+	libsession-helper.la			\
+	libweston-@LIBWESTON_MAJOR@.la		\
 	$(COMPOSITOR_LIBS)			\
 	$(FBDEV_COMPOSITOR_LIBS)		\
-	$(INPUT_BACKEND_LIBS)			\
-	libsession-helper.la			\
-	libshared.la
+	$(INPUT_BACKEND_LIBS)
 fbdev_backend_la_CFLAGS =			\
 	$(COMPOSITOR_CFLAGS)			\
 	$(EGL_CFLAGS)				\
@@ -435,9 +458,11 @@ endif
 if ENABLE_RDP_COMPOSITOR
 libweston_module_LTLIBRARIES += rdp-backend.la
 rdp_backend_la_LDFLAGS = -module -avoid-version
-rdp_backend_la_LIBADD = $(COMPOSITOR_LIBS) \
-	$(RDP_COMPOSITOR_LIBS) \
-	libshared.la
+rdp_backend_la_LIBADD =				\
+	libshared.la				\
+	libweston-@LIBWESTON_MAJOR@.la		\
+	$(COMPOSITOR_LIBS)		\
+	$(RDP_COMPOSITOR_LIBS)
 rdp_backend_la_CFLAGS =				\
 	$(COMPOSITOR_CFLAGS)			\
 	$(RDP_COMPOSITOR_CFLAGS)		\
@@ -451,7 +476,11 @@ endif
 if HAVE_LCMS
 module_LTLIBRARIES += cms-static.la
 cms_static_la_LDFLAGS = -module -avoid-version
-cms_static_la_LIBADD = $(COMPOSITOR_LIBS) $(LCMS_LIBS) libshared.la
+cms_static_la_LIBADD =				\
+	libshared.la				\
+	libweston-@LIBWESTON_MAJOR@.la		\
+	$(LCMS_LIBS)				\
+	$(COMPOSITOR_LIBS)
 cms_static_la_CFLAGS = $(AM_CFLAGS) $(COMPOSITOR_CFLAGS) $(LCMS_CFLAGS)
 cms_static_la_SOURCES =				\
 	compositor/cms-static.c			\
@@ -461,7 +490,12 @@ cms_static_la_SOURCES =				\
 if ENABLE_COLORD
 module_LTLIBRARIES += cms-colord.la
 cms_colord_la_LDFLAGS = -module -avoid-version
-cms_colord_la_LIBADD = $(COMPOSITOR_LIBS) $(COLORD_LIBS)
+cms_colord_la_LIBADD =				\
+	libshared.la				\
+	libweston-@LIBWESTON_MAJOR@.la		\
+	$(COLORD_LIBS)				\
+	$(LCMS_LIBS)				\
+	$(COMPOSITOR_LIBS)
 cms_colord_la_CFLAGS = $(AM_CFLAGS) $(COMPOSITOR_CFLAGS) $(COLORD_CFLAGS)
 cms_colord_la_SOURCES =				\
 	compositor/cms-colord.c			\
@@ -609,6 +643,20 @@ nodist_weston_simple_dmabuf_v4l_SOURCES =		\
 weston_simple_dmabuf_v4l_CFLAGS = $(AM_CFLAGS) $(SIMPLE_DMABUF_V4L_CLIENT_CFLAGS)
 weston_simple_dmabuf_v4l_LDADD = $(SIMPLE_DMABUF_V4L_CLIENT_LIBS) libshared.la
 BUILT_SOURCES += protocol/linux-dmabuf-unstable-v1-client-protocol.h
+endif
+
+if BUILD_SIMPLE_DMABUF_ION_CLIENT
+demo_clients += weston-simple-dmabuf-ion
+weston_simple_dmabuf_ion_SOURCES = clients/simple-dmabuf-ion.c
+nodist_weston_simple_dmabuf_ion_SOURCES =              \
+       protocol/xdg-shell-unstable-v6-protocol.c               \
+       protocol/xdg-shell-unstable-v6-client-protocol.h        \
+       protocol/fullscreen-shell-unstable-v1-protocol.c        \
+       protocol/fullscreen-shell-unstable-v1-client-protocol.h \
+       protocol/linux-dmabuf-unstable-v1-protocol.c \
+       protocol/linux-dmabuf-unstable-v1-client-protocol.h
+weston_simple_dmabuf_ion_CFLAGS = $(AM_CFLAGS) $(SIMPLE_DMABUF_ION_CLIENT_CFLAGS)
+weston_simple_dmabuf_ion_LDADD = $(SIMPLE_DMABUF_ION_CLIENT_LIBS) libshared.la
 endif
 
 noinst_LTLIBRARIES += libtoytoolkit.la
@@ -778,7 +826,7 @@ nodist_weston_keyboard_SOURCES =				\
 weston_keyboard_LDADD = libtoytoolkit.la
 weston_keyboard_CFLAGS = $(AM_CFLAGS) $(CLIENT_CFLAGS)
 
-weston_simple_im_SOURCES = clients/weston-simple-im.c
+weston_simple_im_SOURCES = clients/simple-im.c
 nodist_weston_simple_im_SOURCES =		\
 	protocol/input-method-unstable-v1-protocol.c		\
 	protocol/input-method-unstable-v1-client-protocol.h
@@ -937,7 +985,9 @@ fullscreen_shell_la_CPPFLAGS =			\
 	-DIN_WESTON
 
 fullscreen_shell_la_LDFLAGS = -module -avoid-version
-fullscreen_shell_la_LIBADD = $(COMPOSITOR_LIBS)
+fullscreen_shell_la_LIBADD =			\
+	libweston-@LIBWESTON_MAJOR@.la		\
+	$(COMPOSITOR_LIBS)
 fullscreen_shell_la_CFLAGS = $(AM_CFLAGS) $(COMPOSITOR_CFLAGS)
 fullscreen_shell_la_SOURCES =			\
 	fullscreen-shell/fullscreen-shell.c	\
@@ -957,7 +1007,10 @@ module_LTLIBRARIES +=				\
 
 ivi_shell = ivi-shell.la
 ivi_shell_la_LDFLAGS = -module -avoid-version
-ivi_shell_la_LIBADD = libshared.la $(COMPOSITOR_LIBS)
+ivi_shell_la_LIBADD =				\
+	libshared.la				\
+	libweston-@LIBWESTON_MAJOR@.la		\
+	$(COMPOSITOR_LIBS)
 ivi_shell_la_CFLAGS = $(AM_CFLAGS) $(COMPOSITOR_CFLAGS)
 ivi_shell_la_SOURCES =				\
 	ivi-shell/ivi-layout-export.h		\
@@ -977,7 +1030,10 @@ BUILT_SOURCES += $(nodist_ivi_shell_la_SOURCES)
 
 hmi_controller = hmi-controller.la
 hmi_controller_la_LDFLAGS = -module -avoid-version
-hmi_controller_la_LIBADD = libshared.la $(COMPOSITOR_LIBS)
+hmi_controller_la_LIBADD =			\
+	libshared.la				\
+	libweston-@LIBWESTON_MAJOR@.la		\
+	$(COMPOSITOR_LIBS)
 hmi_controller_la_CFLAGS = $(AM_CFLAGS) $(COMPOSITOR_CFLAGS)
 hmi_controller_la_SOURCES =				\
 	ivi-shell/ivi-layout-export.h			\
@@ -1000,6 +1056,7 @@ screen_share_la_CPPFLAGS = $(AM_CPPFLAGS) -DBINDIR='"$(bindir)"'
 screen_share_la_LDFLAGS = -module -avoid-version
 screen_share_la_LIBADD =			\
 	libshared-cairo.la			\
+	libweston-@LIBWESTON_MAJOR@.la		\
 	$(COMPOSITOR_LIBS)			\
 	$(SCREEN_SHARE_LIBS)
 screen_share_la_CFLAGS =			\
@@ -1030,8 +1087,9 @@ xwayland_la_CPPFLAGS =				\
 	-DLIBEXECDIR='"$(libexecdir)"'
 
 xwayland_la_LDFLAGS = -module -avoid-version
-xwayland_la_LIBADD =			\
-	libshared-cairo.la		\
+xwayland_la_LIBADD =				\
+	libshared-cairo.la			\
+	libweston-@LIBWESTON_MAJOR@.la		\
 	$(XWAYLAND_LIBS)
 xwayland_la_CFLAGS =				\
 	$(AM_CFLAGS)				\
@@ -1172,6 +1230,7 @@ weston_tests =					\
 	viewporter.weston			\
 	roles.weston				\
 	subsurface.weston			\
+	subsurface-shot.weston			\
 	devices.weston
 
 ivi_tests =
@@ -1195,6 +1254,7 @@ export abs_builddir
 
 noinst_LTLIBRARIES +=			\
 	weston-test.la			\
+	weston-test-desktop-shell.la	\
 	$(module_tests)			\
 	libtest-runner.la		\
 	libtest-client.la
@@ -1207,22 +1267,27 @@ noinst_PROGRAMS +=			\
 	$(ivi_tests)			\
 	matrix-test
 
-test_module_ldflags = \
-	-module -avoid-version -rpath $(libdir) $(COMPOSITOR_LIBS)
+test_module_ldflags = -module -avoid-version -rpath $(libdir)
+test_module_libadd =			\
+	libweston-@LIBWESTON_MAJOR@.la	\
+	$(COMPOSITOR_LIBS)
 
 plugin_registry_test_la_SOURCES = tests/plugin-registry-test.c
+plugin_registry_test_la_LIBADD = $(test_module_libadd)
 plugin_registry_test_la_LDFLAGS = $(test_module_ldflags)
 plugin_registry_test_la_CFLAGS = $(AM_CFLAGS) $(COMPOSITOR_CFLAGS)
 
 surface_global_test_la_SOURCES = tests/surface-global-test.c
+surface_global_test_la_LIBADD = $(test_module_libadd)
 surface_global_test_la_LDFLAGS = $(test_module_ldflags)
 surface_global_test_la_CFLAGS = $(AM_CFLAGS) $(COMPOSITOR_CFLAGS)
 
 surface_test_la_SOURCES = tests/surface-test.c
+surface_test_la_LIBADD = $(test_module_libadd)
 surface_test_la_LDFLAGS = $(test_module_ldflags)
 surface_test_la_CFLAGS = $(AM_CFLAGS) $(COMPOSITOR_CFLAGS)
 
-weston_test_la_LIBADD = libshared.la $(COMPOSITOR_LIBS)
+weston_test_la_LIBADD = libshared.la $(test_module_libadd)
 weston_test_la_LDFLAGS = $(test_module_ldflags)
 weston_test_la_CFLAGS = $(AM_CFLAGS) $(COMPOSITOR_CFLAGS)
 weston_test_la_SOURCES = 			\
@@ -1231,6 +1296,13 @@ weston_test_la_SOURCES = 			\
 nodist_weston_test_la_SOURCES =			\
 	protocol/weston-test-protocol.c	\
 	protocol/weston-test-server-protocol.h
+
+weston_test_desktop_shell_la_LIBADD = libshared.la libweston-desktop-@LIBWESTON_MAJOR@.la $(COMPOSITOR_LIBS)
+weston_test_desktop_shell_la_LDFLAGS = $(test_module_ldflags)
+weston_test_desktop_shell_la_CFLAGS = $(AM_CFLAGS) $(COMPOSITOR_CFLAGS)
+weston_test_desktop_shell_la_SOURCES = 			\
+	tests/weston-test-desktop-shell.c		\
+	shared/helpers.h
 
 if ENABLE_EGL
 weston_test_la_CFLAGS += $(EGL_TESTS_CFLAGS)
@@ -1319,6 +1391,10 @@ subsurface_weston_SOURCES = tests/subsurface-test.c
 subsurface_weston_CFLAGS = $(AM_CFLAGS) $(TEST_CLIENT_CFLAGS)
 subsurface_weston_LDADD = libtest-client.la
 
+subsurface_shot_weston_SOURCES = tests/subsurface-shot-test.c
+subsurface_shot_weston_CFLAGS = $(AM_CFLAGS) $(TEST_CLIENT_CFLAGS)
+subsurface_shot_weston_LDADD = libtest-client.la
+
 presentation_weston_SOURCES = 			\
 	tests/presentation-test.c		\
 	shared/helpers.h
@@ -1341,17 +1417,11 @@ nodist_viewporter_weston_SOURCES =		\
 viewporter_weston_CFLAGS = $(AM_CFLAGS) $(TEST_CLIENT_CFLAGS)
 viewporter_weston_LDADD = libtest-client.la
 
-if ENABLE_EGL
-weston_tests += buffer-count.weston
-buffer_count_weston_SOURCES = tests/buffer-count-test.c
-buffer_count_weston_CFLAGS = $(AM_CFLAGS) $(EGL_TESTS_CFLAGS) $(TEST_CLIENT_CFLAGS)
-buffer_count_weston_LDADD = libtest-client.la $(EGL_TESTS_LIBS)
-endif
-
 if ENABLE_XWAYLAND_TEST
 weston_tests +=	xwayland-test.weston
 xwayland_test_weston_SOURCES = tests/xwayland-test.c
-xwayland_test_weston_CFLAGS = $(AM_CFLAGS) $(XWAYLAND_TEST_CFLAGS)
+xwayland_test_weston_CFLAGS = \
+	$(AM_CFLAGS) $(XWAYLAND_TEST_CFLAGS) -DXSERVER_PATH='"@XSERVER_PATH@"'
 xwayland_test_weston_LDADD = libtest-client.la $(XWAYLAND_TEST_LIBS)
 endif
 
@@ -1367,13 +1437,13 @@ module_tests += 				\
 	ivi-layout-internal-test.la		\
 	ivi-layout-test.la
 
-ivi_layout_internal_test_la_LIBADD = $(COMPOSITOR_LIBS)
+ivi_layout_internal_test_la_LIBADD = $(test_module_libadd)
 ivi_layout_internal_test_la_LDFLAGS = $(test_module_ldflags)
 ivi_layout_internal_test_la_CFLAGS = $(AM_CFLAGS) $(COMPOSITOR_CFLAGS)
 ivi_layout_internal_test_la_SOURCES =			\
 	tests/ivi_layout-internal-test.c
 
-ivi_layout_test_la_LIBADD = $(COMPOSITOR_LIBS)
+ivi_layout_test_la_LIBADD = $(test_module_libadd)
 ivi_layout_test_la_LDFLAGS = $(test_module_ldflags)
 ivi_layout_test_la_CFLAGS = $(AM_CFLAGS) $(COMPOSITOR_CFLAGS)
 ivi_layout_test_la_SOURCES =			\
@@ -1434,10 +1504,15 @@ zuctest_SOURCES =				\
 	tools/zunitc/test/zunitc_test.c
 
 EXTRA_DIST +=							\
-	tests/weston-tests-env					\
 	tests/internal-screenshot.ini				\
 	tests/reference/internal-screenshot-bad-00.png		\
-	tests/reference/internal-screenshot-good-00.png
+	tests/reference/internal-screenshot-good-00.png		\
+	tests/reference/subsurface_z_order-00.png		\
+	tests/reference/subsurface_z_order-01.png		\
+	tests/reference/subsurface_z_order-02.png		\
+	tests/reference/subsurface_z_order-03.png		\
+	tests/reference/subsurface_z_order-04.png		\
+	tests/weston-tests-env
 
 BUILT_SOURCES +=				\
 	protocol/weston-test-protocol.c	\
@@ -1461,7 +1536,7 @@ EXTRA_DIST +=					\
 noinst_LTLIBRARIES +=				\
 	surface-screenshot.la
 
-surface_screenshot_la_LIBADD = libshared.la $(COMPOSITOR_LIBS)
+surface_screenshot_la_LIBADD = libshared.la $(test_module_libadd)
 surface_screenshot_la_LDFLAGS = $(test_module_ldflags)
 surface_screenshot_la_CFLAGS = $(AM_CFLAGS) $(COMPOSITOR_CFLAGS)
 surface_screenshot_la_SOURCES = tests/surface-screenshot.c

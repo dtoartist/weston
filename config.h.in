@@ -117,11 +117,11 @@
 /* Have webp */
 #undef HAVE_WEBP
 
-/* Define to 1 if you have the `xcb_poll_for_queued_event' function. */
-#undef HAVE_XCB_POLL_FOR_QUEUED_EVENT
-
 /* libxcb supports XKB protocol */
 #undef HAVE_XCB_XKB
+
+/* Define if xkbcommon is 0.5.0 or newer */
+#undef HAVE_XKBCOMMON_COMPOSE
 
 /* Define to the sub-directory in which libtool stores uninstalled libraries.
    */

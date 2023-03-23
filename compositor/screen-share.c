@@ -192,7 +192,7 @@ ss_seat_handle_keymap(void *data, struct wl_keyboard *wl_keyboard,
 	char *map_str;
 
 	if (!data)
-		goto error;
+		goto error_no_seat;
 
 	if (format == WL_KEYBOARD_KEYMAP_FORMAT_XKB_V1) {
 		map_str = mmap(NULL, size, PROT_READ, MAP_SHARED, fd, 0);
@@ -235,6 +235,7 @@ ss_seat_handle_keymap(void *data, struct wl_keyboard *wl_keyboard,
 
 error:
 	wl_keyboard_release(seat->parent.keyboard);
+error_no_seat:
 	close(fd);
 }
 
@@ -883,7 +884,7 @@ shared_output_create(struct weston_output *output, int parent_fd)
 {
 	struct shared_output *so;
 	struct wl_event_loop *loop;
-	struct ss_seat *seat;
+	struct ss_seat *seat, *tmp;
 	int epoll_fd;
 
 	so = zalloc(sizeof *so);
@@ -971,7 +972,7 @@ shared_output_create(struct weston_output *output, int parent_fd)
 	return so;
 
 err_display:
-	wl_list_for_each(seat, &so->seat_list, link)
+	wl_list_for_each_safe(seat, tmp, &so->seat_list, link)
 		ss_seat_destroy(seat);
 	wl_display_disconnect(so->parent.display);
 err_alloc:
@@ -1106,8 +1107,8 @@ share_output_binding(struct weston_keyboard *keyboard, uint32_t time, uint32_t k
 }
 
 WL_EXPORT int
-module_init(struct weston_compositor *compositor,
-	    int *argc, char *argv[])
+wet_module_init(struct weston_compositor *compositor,
+		int *argc, char *argv[])
 {
 	struct screen_share *ss;
 	struct weston_config *config = wet_get_config(compositor);

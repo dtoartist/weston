@@ -69,6 +69,11 @@ weston_desktop_api_resize(struct weston_desktop *desktop,
 			  struct weston_seat *seat, uint32_t serial,
 			  enum weston_desktop_surface_edge edges);
 void
+weston_desktop_api_set_window_geometry_requested(struct weston_desktop *desktop,
+						 struct weston_desktop_surface *surface,
+						 int32_t x, int32_t y,
+						 int32_t width, int32_t height);
+void
 weston_desktop_api_fullscreen_requested(struct weston_desktop *desktop,
 					struct weston_desktop_surface *surface,
 					bool fullscreen,
@@ -80,6 +85,11 @@ weston_desktop_api_maximized_requested(struct weston_desktop *desktop,
 void
 weston_desktop_api_minimized_requested(struct weston_desktop *desktop,
 				       struct weston_desktop_surface *surface);
+
+void
+weston_desktop_api_set_xwayland_position(struct weston_desktop *desktop,
+					 struct weston_desktop_surface *surface,
+					 int32_t x, int32_t y);
 
 struct weston_desktop_seat *
 weston_desktop_seat_from_seat(struct weston_seat *wseat);
